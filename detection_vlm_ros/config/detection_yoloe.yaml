@@ -1,0 +1,41 @@
+---
+vlm:
+  type: yoloe
+  model: yoloe-11l-seg-pf.pt
+  confidence_threshold: 0.5
+  output_size: 640
+  verbose: False
+  cuda: true
+prompt: "Detect stairs" 
+worker:
+  min_separation_s: 1.0
+voxel_size: 0.15
+min_points_per_cluster: 8
+eps_dbscan: 0.3
+
+camera_intrinsics:
+  fx: 691.145659492411
+  fy: 690.9547836776351
+  cx: 716.2047407756927
+  cy: 544.058250985693
+
+lidar_to_body_transform:
+  translation:
+    x: -0.06605
+    y: -0.01878
+    z: 0.034
+  quaternion:
+    x: 0.707
+    y: 0.0
+    z: -0.707
+    w: 0.0
+# lidar_to_body_transform:
+#   translation:
+#     x: 0.034
+#     y: -0.01878
+#     z: -0.06605
+#   quaternion:
+#     x: 0.707
+#     y: -0.0
+#     z: -0.707
+#     w: 0.0

@@ -1,0 +1,83 @@
+%YAML 1.2
+---
+launch:
+- arg:
+    name: python_env
+    default: /home/developer/detection_vlm_venv/bin/python3
+    description: Path to Python executable in the virtualenv
+- arg:
+    name: config_path
+    default: $(find-pkg-share detection_vlm_ros)/config/detection_yoloe.yaml
+    description: Path to the configuration file
+
+- arg:
+    name: system_prompt_path
+    default: $(find-pkg-share detection_vlm_ros)/prompts/detection_system_prompt.txt
+    description: Path to the system prompt file
+
+- arg:
+    name: compressed_image
+    default: 'True'
+    description: Use compressed image topic
+
+- arg:
+    name: input_image_topic
+    default: /cam_front/image_raw/compressed
+    description: Input image topic
+
+- arg:
+    name: input_pointcloud_topic
+    default: /mimosa_node/lidar/manager/points_full_res
+    description: Input point cloud topic
+
+- arg:
+    name: input_camera_info_topic
+    default: /camera/color/camera_info
+    description: Input camera info topic
+
+- arg:
+    name: target_frame
+    default: mimosa_world
+    description: Target frame for point cloud accumulation
+
+- arg:
+    name: camera_frame
+    default: camera0
+    description: Camera frame for point cloud projection
+
+- arg:
+    name: body_frame
+    default: mimosa_body
+    description: Body frame of the robot
+
+- arg:
+    name: use_tf_current_time
+    default: 'True'
+    description: Use current time for TF lookups
+
+- arg:
+    name: verbose
+    default: 'False'
+    description: Enable verbose logging
+
+- node:
+    pkg: detection_vlm_ros
+    exec: detection_vlm_node.py
+    name: detection_vlm_node
+    namespace: detection_vlm
+    output: screen
+    on_exit: shutdown
+    launch-prefix: $(var python_env)
+    param:
+    - name: "config_path"
+      value: "$(var config_path)"
+    - name: config
+      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, target_frame: $(var target_frame), camera_frame: $(var camera_frame), body_frame: $(var body_frame), use_tf_current_time: $(var use_tf_current_time), compressed_image: $(var compressed_image), verbose: $(var verbose)}'
+      type: str
+    remap:
+    - from: "/detection_vlm/input_image"
+      to: "$(var input_image_topic)"
+    - from: "/detection_vlm/input_pointcloud"
+      to: "$(var input_pointcloud_topic)"
+    - from: "/detection_vlm/input_camera_info"
+      to: "$(var input_camera_info_topic)"

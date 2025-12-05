@@ -1,0 +1,10 @@
+---
+vlm:
+  type: openai
+  client_config:
+    model: gpt-5 
+prompt: "Could there be a person nearby this place?" 
+worker:
+  min_separation_s: 40.0
+overlay_alpha: 0.3
+footer_height: 80

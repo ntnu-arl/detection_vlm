@@ -1,0 +1,54 @@
+%YAML 1.2
+---
+launch:
+- arg:
+    name: python_env
+    default: /root/detection_vlm_env/bin/python3
+    description: Path to Python executable in virtualenv
+
+- arg:
+    name: config_path
+    default: $(find-pkg-share detection_vlm_ros)/config/reasoning_vlm.yaml
+    description: Path to the configuration file
+
+- arg:
+    name: system_prompt_path
+    default: $(find-pkg-share detection_vlm_ros)/prompts/reasoning_system_prompt.txt
+    description: Path to the system prompt file
+
+- arg:
+    name: compressed_image
+    default: 'True'
+    description: Use compressed image topic
+
+- arg:
+    name: input_image_topic
+    default: /cam_front/image_raw/compressed
+    description: Input image topic
+
+- arg:
+    name: verbose
+    default: 'True'
+    description: Enable verbose logging
+
+- node:
+    pkg: detection_vlm_ros
+    exec: reasoning_vlm_node.py
+    name: reasoning_vlm_node
+    namespace: reasoning_vlm
+    output: screen
+    launch-prefix: $(var python_env)
+    on_exit: shutdown
+    param:
+    - name: "config_path"
+      value: "$(var config_path)"
+      type: str
+    - name: "vlm/system_prompt_path" 
+      value: "$(var system_prompt_path)"
+      type: str
+    - name: config
+      value: '{compressed_image: $(var compressed_image), verbose: $(var verbose)}'
+      type: str
+    remap:
+    - from: "/reasoning_vlm/input_image"
+      to: "$(var input_image_topic)"

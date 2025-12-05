@@ -1,0 +1,17 @@
+---
+vlm:
+  type: openai
+  client_config:
+    model: gpt-5 
+prompt: "Detect stairs" 
+worker:
+  min_separation_s: 20.0
+voxel_size: 0.15
+min_points_per_cluster: 8
+eps_dbscan: 0.3
+
+camera_intrinsics:
+  fx: 691.145659492411
+  fy: 690.9547836776351
+  cx: 716.2047407756927
+  cy: 544.058250985693

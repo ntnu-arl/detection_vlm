@@ -3,15 +3,27 @@ vlm:
   type: openai
   client_config:
     model: gpt-5 
+
+# Detection prompt
 prompt: "Detect stairs" 
+# Image subscription parameters
 worker:
-  min_separation_s: 20.0
+  min_separation_s: 2.0
+compressed_image: True
+# Clustering parameters and map voxel size
 voxel_size: 0.15
 min_points_per_cluster: 8
 eps_dbscan: 0.3
-
+# Camera intrinsics
 camera_intrinsics:
   fx: 691.145659492411
   fy: 690.9547836776351
   cx: 716.2047407756927
   cy: 544.058250985693
+# Point cloud filtering parameters
+min_point_r: 1.5
+max_point_r: 20.0
+# Others
+use_tf_current_time: False
+use_masks_for_projection: False
+verbose: False

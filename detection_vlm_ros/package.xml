@@ -1,17 +1,13 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
-<package format="3">
+<package format="2">
     <name>detection_vlm_ros</name>
     <version>0.0.0</version>
     <description>Package for detection_vlm_ros</description>
     <maintainer email="albert.g.puigjaner@ntnu.no">Albert Gassol Puigjaner</maintainer>
     <license>None</license>
 
-    <buildtool_depend>ament_cmake</buildtool_depend>
-    <buildtool_depend>ament_cmake_python</buildtool_depend>
+    <buildtool_depend>catkin</buildtool_depend>
+    <buildtool_depend>catkin_simple</buildtool_depend>
     <depend>detection_vlm_python</depend>
-    <exec_depend>rclpy</exec_depend>
-    <export>
-      <build_type>ament_cmake</build_type>
-    </export>
+    <exec_depend>rospy</exec_depend>
 </package>

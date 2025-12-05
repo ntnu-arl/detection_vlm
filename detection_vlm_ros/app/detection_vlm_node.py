@@ -9,53 +9,26 @@ from typing import Any, List
 import cv2
 import numpy as np
 import open3d as o3d
-import rclpy
+import rospy
+import sensor_msgs.point_cloud2 as pc2
 import tf2_ros
 import tf2_sensor_msgs.tf2_sensor_msgs as tf2sm
-import yaml
-from builtin_interfaces.msg import Duration as DurationMsg
+from dynamic_reconfigure.server import Server
 from geometry_msgs.msg import Point, Pose
-from rclpy.duration import Duration
-from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image, PointCloud2
-from spark_config.config import Config, config_field
 from std_msgs.msg import Header
 from vision_msgs.msg import BoundingBox3D, BoundingBox3DArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 import detection_vlm_python.models as models
 import detection_vlm_ros
-import detection_vlm_ros.point_cloud2 as pc2
-from detection_vlm_msgs.srv import SetPrompt
+from detection_vlm_msgs.srv import SetPrompt, SetPromptResponse
 from detection_vlm_python import BoundingBox
+from detection_vlm_python.config import Config, config_field
 from detection_vlm_ros import ImageWorker, ImageWorkerConfig
+from detection_vlm_ros.cfg import DetectionVLMConfig
 from detection_vlm_ros.ros_conversions import Conversions
-
-
-def to_sec(stamp):
-    return stamp.sec + stamp.nanosec * 1e-9
-
-
-@dataclass
-class Translation(Config):
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-
-
-@dataclass
-class Quaternion(Config):
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    w: float = 1.0
-
-
-@dataclass
-class Lidar2BodyTransform(Config):
-    translation: Translation = field(default_factory=Translation)
-    quaternion: Quaternion = field(default_factory=Quaternion)
 
 
 @dataclass
@@ -75,66 +48,70 @@ class DetectionVLMNodeConfig(Config):
     target_frame: str = "world"
     camera_frame: str = "camera"
     body_frame: str = "body"
-    lidar_to_body_transform: Lidar2BodyTransform = field(
-        default_factory=Lidar2BodyTransform
-    )
+    min_point_r: float = 0.5
+    max_point_r: float = 20.0
     use_tf_current_time: bool = False
     voxel_size: float = 0.05
     min_points_per_cluster: int = 30
     eps_dbscan: float = 0.2
     compressed_image: bool = False
+    use_masks_for_projection: bool = True
+    classes_file: str = ""
     camera_intrinsics: CameraIntrinsics = field(default_factory=CameraIntrinsics)
 
 
-class DetectionVLMNode(Node):
+class DetectionVLMNode:
     """ROS node for detection VLM."""
 
     def __init__(self) -> None:
         """Initialize the Detection VLM ROS node."""
-        super().__init__("detection_vlm_node")
-        ros_config_params = (
-            self.declare_parameter("config", "").get_parameter_value().string_value
-        )
-        # Load configuration
-        config_path = (
-            self.declare_parameter("config_path", "").get_parameter_value().string_value
-        )
-        config_path = Path(config_path).expanduser().absolute()
-        if not config_path.exists() and config_path != "":
-            self.get_logger().warn(f"config path '{config_path}' does not exist!")
-            self.config = DetectionVLMNodeConfig()
-        else:
-            self.config = Config.load(DetectionVLMNodeConfig, config_path)
-        self.config.update(yaml.safe_load(ros_config_params))
-        self.prompt = self.config.prompt
-
-        # Initialize VLM model
+        self.config = detection_vlm_ros.load_from_ros(DetectionVLMNodeConfig, ns="~")
         self.vlm_model = self.config.vlm.create()
-        self.get_logger().info(f"Initializing with {self.config.show()}")
-
-        # Set up image worker and ROS interfaces
+        rospy.loginfo(f"[{rospy.get_name()}] Initializing with {self.config.show()}")
         self.worker = ImageWorker(
-            self,
             self.config.worker,
             "input_image",
             CompressedImage if self.config.compressed_image else Image,
             self._spin_once,
         )
-        self.srv = self.create_service(SetPrompt, "set_prompt", self._handle_set_prompt)
-        self.detections_image_pub = self.create_publisher(Image, "detections_image", 1)
+        self.prompt = self.config.prompt
+        self._initialized = False
+        self.confidence_threshold = self.vlm_model.config.confidence_threshold
+        if "pf" not in self.config.vlm.model:
+            classes_file = Path(self.config.classes_file)
+            if classes_file.exists():
+                with classes_file.open("r") as f:
+                    class_names = [
+                        line.strip() for line in f.readlines() if line.strip()
+                    ]
+                success = self.vlm_model.set_classes(class_names)
+                if not success:
+                    rospy.logwarn(
+                        f"[{rospy.get_name()}] Model does not support setting classes."
+                    )
+                elif self.config.verbose:
+                    rospy.loginfo(
+                        f"[{rospy.get_name()}] Loaded {len(class_names)} classes from {classes_file}."
+                    )
 
-        self.pcl_sub = self.create_subscription(
-            PointCloud2, "input_pointcloud", self._pcl_callback, 1
+        self.srv = rospy.Service("set_prompt", SetPrompt, self._handle_set_prompt)
+        self.detections_image_pub = rospy.Publisher(
+            "detections_image", Image, queue_size=1
         )
-        self.pcl_pub = self.create_publisher(PointCloud2, "accumulated_pointcloud", 1)
-        self.bbox3d_pub = self.create_publisher(
-            BoundingBox3DArray, "detected_bboxes_3d", 1
+        self.pcl_sub = rospy.Subscriber(
+            "input_pointcloud", PointCloud2, self._pcl_callback, queue_size=1
         )
-        self.vis_3dboxes_pub = self.create_publisher(
-            MarkerArray, "visualization_3d_bboxes", 1
+        self.pcl_pub = rospy.Publisher(
+            "accumulated_pointcloud", PointCloud2, queue_size=1
         )
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo, "input_camera_info", self._camera_info_callback, 1
+        self.bbox3d_pub = rospy.Publisher(
+            "detected_bboxes_3d", BoundingBox3DArray, queue_size=1
+        )
+        self.vis_3dboxes_pub = rospy.Publisher(
+            "visualization_3d_bboxes", MarkerArray, queue_size=1
+        )
+        self.camera_info_sub = rospy.Subscriber(
+            "input_camera_info", CameraInfo, self._camera_info_callback, queue_size=1
         )
 
         self.fx = self.config.camera_intrinsics.fx
@@ -142,69 +119,90 @@ class DetectionVLMNode(Node):
         self.cx = self.config.camera_intrinsics.cx
         self.cy = self.config.camera_intrinsics.cy
 
-        # Set up TF2 listener
-        self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         self.accumulated_cloud = o3d.geometry.PointCloud()
-        self.get_logger().info(f"Device: {self.vlm_model.model.device}")
-        self.get_logger().info("Detection VLM node initialized.")
+
+        # Generate N different random colors for visualization, N is number of classes
+        names = list(self.vlm_model.names.values())
+        colors = np.random.randint(0, 255, size=(len(names), 3))
+        # Generate a dict mapping class names to colors
+        self.class_colors = {
+            names[i]: tuple(int(c) for c in colors[i]) for i in range(len(names))
+        }
+
+        self.dynamic_reconf_server = Server(
+            DetectionVLMConfig, self._dynamic_reconf_callback
+        )
+
+        rospy.loginfo(f"[{rospy.get_name()}] Device: {self.vlm_model.model.device}")
+        rospy.loginfo(f"[{rospy.get_name()}] finished initializing!")
 
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         """Callback to process incoming camera info messages.
         :param msg: Incoming CameraInfo message.
         """
-        self.fx = msg.k[0]
-        self.fy = msg.k[4]
-        self.cx = msg.k[2]
-        self.cy = msg.k[5]
+        self.fx = msg.K[0]
+        self.fy = msg.K[4]
+        self.cx = msg.K[2]
+        self.cy = msg.K[5]
         # Unsubscribe after receiving the first message
-        self.destroy_subscription(self.camera_info_sub)
-        self.get_logger().info(
-            f"Camera intrinsics set: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}"
+        self.camera_info_sub.unregister()
+        rospy.loginfo(
+            f"[{rospy.get_name()}] Camera intrinsics set: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}"
         )
+
+    def _dynamic_reconf_callback(self, config, level):
+        if not self._initialized:
+            self._initialized = True
+            return config
+        self.confidence_threshold = config.confidence_threshold
+        rospy.loginfo(
+            f"[{rospy.get_name()}] Updated confidence threshold: {self.confidence_threshold}"
+        )
+        return config
 
     def _pcl_callback(self, msg: PointCloud2) -> None:
         """Callback to process incoming point cloud messages.
         :param msg: Incoming PointCloud2 message.
         """
         try:
-            body2world = self.tf_buffer.lookup_transform(
-                self.config.target_frame,
+            transform_2_body = self.tf_buffer.lookup_transform(
                 self.config.body_frame,
+                msg.header.frame_id,
                 msg.header.stamp
                 if not self.config.use_tf_current_time
-                else rclpy.time.Time(),
-                Duration(seconds=3.0),
+                else rospy.Time(0),
+                rospy.Duration(3.0),
             )
-            lidar2body = tf2_ros.TransformStamped()
-            lidar2body.header.frame_id = self.config.body_frame
-            lidar2body.child_frame_id = "lidar"
-            lidar2body.transform.translation.x = (
-                self.config.lidar_to_body_transform.translation.x
+            transformed_body_cloud = tf2sm.do_transform_cloud(msg, transform_2_body)
+            point_bodys = np.array(
+                list(
+                    pc2.read_points(
+                        transformed_body_cloud,
+                        field_names=("x", "y", "z"),
+                        skip_nans=True,
+                    )
+                )
             )
-            lidar2body.transform.translation.y = (
-                self.config.lidar_to_body_transform.translation.y
-            )
-            lidar2body.transform.translation.z = (
-                self.config.lidar_to_body_transform.translation.z
-            )
-            lidar2body.transform.rotation.x = (
-                self.config.lidar_to_body_transform.quaternion.x
-            )
-            lidar2body.transform.rotation.y = (
-                self.config.lidar_to_body_transform.quaternion.y
-            )
-            lidar2body.transform.rotation.z = (
-                self.config.lidar_to_body_transform.quaternion.z
-            )
-            lidar2body.transform.rotation.w = (
-                self.config.lidar_to_body_transform.quaternion.w
-            )
-            # compute inverse transform
-            body_cloud = tf2sm.do_transform_cloud(msg, lidar2body)
+            # Get indices of points within min/max radius
+            dists = np.linalg.norm(point_bodys, axis=1)
+            valid_indices = np.where(
+                (dists >= self.config.min_point_r) & (dists <= self.config.max_point_r)
+            )[0]
+            if valid_indices.size == 0:
+                return
 
-            transformed_cloud = tf2sm.do_transform_cloud(body_cloud, body2world)
+            transform = self.tf_buffer.lookup_transform(
+                self.config.target_frame,
+                msg.header.frame_id,
+                msg.header.stamp
+                if not self.config.use_tf_current_time
+                else rospy.Time(0),
+                rospy.Duration(3.0),
+            )
+            transformed_cloud = tf2sm.do_transform_cloud(msg, transform)
 
             # Convert to numpy array
             points = np.array(
@@ -214,6 +212,8 @@ class DetectionVLMNode(Node):
                     )
                 )
             )
+            # Keep only valid points
+            points = points[valid_indices]
             if points.size == 0:
                 return
 
@@ -234,18 +234,18 @@ class DetectionVLMNode(Node):
             tf2_ros.ExtrapolationException,
             tf2_ros.ConnectivityException,
         ) as e:
-            self.get_logger().warn(
-                f"[PersistentVoxelAccumulator] TF lookup failed: {e}"
+            rospy.logwarn_throttle(
+                2.0, f"[PersistentVoxelAccumulator] TF lookup failed: {e}"
             )
         except Exception as e:
-            self.get_logger().error(
+            rospy.logerr(
                 f"[PersistentVoxelAccumulator] Error processing pointcloud: {e}"
             )
 
         if len(self.accumulated_cloud.points) > 0:
             if self.config.verbose:
-                self.get_logger().info(
-                    f"Accumulated cloud has {len(self.accumulated_cloud.points)} points."
+                rospy.loginfo(
+                    f"[{rospy.get_name()}] Accumulated cloud has {len(self.accumulated_cloud.points)} points."
                 )
             # Publish accumulated cloud
             pcl_msg = pc2.create_cloud_xyz32(
@@ -253,18 +253,16 @@ class DetectionVLMNode(Node):
                 np.asarray(self.accumulated_cloud.points),
             )
             self.pcl_pub.publish(pcl_msg)
-        if self.config.verbose:
-            self.get_logger().info("Published accumulated point cloud.")
+            rospy.loginfo(f"[{rospy.get_name()}] Published accumulated point cloud.")
 
-    def _handle_set_prompt(self, req: SetPrompt, response):
+    def _handle_set_prompt(self, req: SetPrompt) -> SetPromptResponse:
         """Handle set prompt service call.
         :param req: Service request containing the new prompt.
         :return: Service response indicating success.
         """
         self.prompt = req.prompt
-        self.get_logger().info(f"Prompt updated to: {self.prompt}")
-        response.success = True
-        return response
+        rospy.loginfo(f"[{rospy.get_name()}] Prompt updated to: {self.prompt}")
+        return SetPromptResponse(success=True)
 
     def _spin_once(self, header: Header, image: np.ndarray) -> None:
         """Process a single image.
@@ -272,39 +270,96 @@ class DetectionVLMNode(Node):
         :param image: Input image as a NumPy array.
         """
         if self.config.verbose:
-            self.get_logger().info(f"Processing image at time {to_sec(header.stamp)}")
+            rospy.loginfo(
+                f"[{rospy.get_name()}] Processing image at time {header.stamp.to_sec()}"
+            )
         start_time = time.time()
-        bboxes: List[BoundingBox] = self.vlm_model.detect(image, self.prompt)
+        bboxes: List[BoundingBox] = self.vlm_model.detect(
+            image, self.prompt, confidence_threshold=self.confidence_threshold
+        )
         if len(bboxes) == 0:
             if self.config.verbose:
-                self.get_logger().info("No objects detected.")
+                rospy.loginfo(f"[{rospy.get_name()}] No objects detected.")
             return
         if self.config.verbose:
-            self.get_logger().info(
-                f"Detected {len(bboxes)} objects in {time.time() - start_time:.2f} seconds."
+            rospy.loginfo(
+                f"[{rospy.get_name()}] Detected {len(bboxes)} objects in {time.time() - start_time:.2f} seconds."
             )
         detection_image = image.copy()
         detection_image = cv2.cvtColor(detection_image, cv2.COLOR_RGB2BGR)
         for bbox in bboxes:
-            random_color = tuple(np.random.randint(0, 255, size=3).tolist())
+            if bbox.details in self.class_colors:
+                random_color = self.class_colors[bbox.details]
+            else:
+                random_color = tuple(np.random.randint(0, 255, size=3).tolist())
+            random_color_bgr = (random_color[2], random_color[1], random_color[0])
             cv2.rectangle(
-                detection_image, (bbox.x0, bbox.y0), (bbox.x1, bbox.y1), random_color, 2
+                detection_image,
+                (bbox.x0, bbox.y0),
+                (bbox.x1, bbox.y1),
+                random_color_bgr,
+                2,
             )
+            text = bbox.details
+            if bbox.confidence is not None:
+                text += f" {bbox.confidence:.2f}"
             cv2.putText(
                 detection_image,
-                bbox.details,
+                text,
                 (bbox.x0, bbox.y0 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
-                random_color,
+                random_color_bgr,
                 2,
             )
+            if bbox.mask is not None:
+                colored_mask = np.zeros_like(detection_image, dtype=np.uint8)
+                colored_mask[bbox.mask] = random_color_bgr
+                alpha = 0.5
+                detection_image = cv2.addWeighted(
+                    detection_image, 1.0, colored_mask, alpha, 0
+                )
 
         ros_image = Conversions.to_sensor_image(detection_image)
         self.detections_image_pub.publish(ros_image)
 
         if len(self.accumulated_cloud.points) > 0 and self.fx is not None:
             self.process_3d_bboxes(header, bboxes, self.accumulated_cloud)
+
+    @staticmethod
+    def get_points_in_mask(
+        points_3d: np.ndarray, proj_points_uv: np.ndarray, mask: np.ndarray
+    ) -> np.ndarray:
+        """
+        :param points_3d: Nx3 numpy array
+        :param proj_points_uv: Nx2 numpy array (pixel [u, v] coords)
+        :param mask: HxW numpy array (True/False or 1/0)
+        :return: Mx3 numpy array of 3D points inside the mask
+        """
+
+        H, W = mask.shape
+
+        # round pixel coords and convert to int
+        uv = np.round(proj_points_uv).astype(int)
+
+        # keep points inside image bounds
+        valid = (
+            (uv[:, 0] >= 0)
+            & (uv[:, 0] < W)
+            & (uv[:, 1] >= 0)
+            & (uv[:, 1] < H)
+            & (points_3d[:, 2] > 0)
+        )
+
+        uv_valid = uv[valid]
+        pts_valid = points_3d[valid]
+
+        # check mask for those valid uv indices
+        mask_values = mask[uv_valid[:, 1], uv_valid[:, 0]]  # mask[y,x]
+
+        inside_mask = mask_values.astype(bool)
+
+        return pts_valid[inside_mask]
 
     def process_3d_bboxes(
         self,
@@ -330,10 +385,8 @@ class DetectionVLMNode(Node):
             transform = self.tf_buffer.lookup_transform(
                 self.config.camera_frame,
                 self.config.target_frame,
-                header.stamp
-                if not self.config.use_tf_current_time
-                else rclpy.time.Time(),
-                Duration(seconds=3.0),
+                header.stamp if not self.config.use_tf_current_time else rospy.Time(0),
+                rospy.Duration(3.0),
             )
 
             # Extract pose
@@ -361,18 +414,26 @@ class DetectionVLMNode(Node):
             bbs3d = BoundingBox3DArray()
             bbs3d.header = header
             all_labels = []
-            for bbox in bboxes:
+            all_confidences = []
+            for i, bbox in enumerate(bboxes):
                 # Project 3D points → 2D image plane
                 u = (points[:, 0] * self.fx / points[:, 2]) + self.cx
                 v = (points[:, 1] * self.fy / points[:, 2]) + self.cy
-                mask = (
-                    (u >= bbox.x0)
-                    & (u <= bbox.x1)
-                    & (v >= bbox.y0)
-                    & (v <= bbox.y1)
-                    & (points[:, 2] > 0)
-                )
-                box_points = points[mask]
+                if self.config.use_masks_for_projection and bbox.mask is not None:
+                    box_points = self.get_points_in_mask(
+                        points, np.stack((u, v), axis=-1), bbox.mask
+                    )
+                    if len(box_points) < self.config.min_points_per_cluster:
+                        continue
+                else:
+                    mask = (
+                        (u >= bbox.x0)
+                        & (u <= bbox.x1)
+                        & (v >= bbox.y0)
+                        & (v <= bbox.y1)
+                        & (points[:, 2] > 0)
+                    )
+                    box_points = points[mask]
                 if len(box_points) < self.config.min_points_per_cluster:
                     continue
 
@@ -425,16 +486,18 @@ class DetectionVLMNode(Node):
                 bbox3d.size.z = extent[2]
                 bbs3d.boxes.append(bbox3d)
                 all_labels.append(bbox.details)
+                if bbox.confidence is not None:
+                    all_confidences.append(bbox.confidence)
 
             if len(bbs3d.boxes) > 0:
                 self.bbox3d_pub.publish(bbs3d)
-                self._pub_visualization_3dboxes(bbs3d, all_labels)
+                self._pub_visualization_3dboxes(bbs3d, all_labels, all_confidences)
 
         except Exception as e:
-            self.get_logger().error(f"Error in process_3d_bboxes: {e}")
+            rospy.logerr(f"[{rospy.get_name()}] Error in process_3d_bboxes: {e}")
 
     def _pub_visualization_3dboxes(
-        self, msg: BoundingBox3DArray, labels: List[str]
+        self, msg: BoundingBox3DArray, labels: List[str], confidences: List[float]
     ) -> None:
         markers = MarkerArray()
         for i, box in enumerate(msg.boxes):
@@ -479,24 +542,23 @@ class DetectionVLMNode(Node):
 
             # Add edge points
             for start, end in edges:
-                p1 = Point()
-                p1.x, p1.y, p1.z = corners[start]
-                p2 = Point()
-                p2.x, p2.y, p2.z = corners[end]
+                p1 = Point(*corners[start])
+                p2 = Point(*corners[end])
                 m.points.append(p1)
                 m.points.append(p2)
 
             # Line color and thickness
             random_color = tuple(np.random.rand(3).tolist())
+            if i < len(labels) and labels[i] in self.class_colors:
+                random_color = tuple(c / 255.0 for c in self.class_colors[labels[i]])
+
             m.color.r = random_color[0]
             m.color.g = random_color[1]
             m.color.b = random_color[2]
             m.color.a = 1.0
-            m.scale.x = 0.02  # line thickness
+            m.scale.x = 0.05  # line thickness
 
-            m.lifetime = DurationMsg()
-            m.lifetime.sec = int(self.config.worker.min_separation_s)
-            m.lifetime.nanosec = int((self.config.worker.min_separation_s % 1.0) * 1e9)
+            m.lifetime = rospy.Duration(self.config.worker.min_separation_s)
             markers.markers.append(m)
 
             # --- Label marker ---
@@ -504,7 +566,7 @@ class DetectionVLMNode(Node):
             label.header = msg.header
             label.header.frame_id = self.config.target_frame
             label.ns = "bbox3d_labels"
-            label.id = 10000 + i  # avoid conflict with line IDs
+            label.id = 10000 + i
             label.type = Marker.TEXT_VIEW_FACING
             label.action = Marker.ADD
 
@@ -515,32 +577,32 @@ class DetectionVLMNode(Node):
             label.pose.position.z = box.center.position.z + (box.size.z / 2.0) + 0.2
             label.pose.orientation.w = 1.0
 
-            label.scale.z = 0.3  # text height
-            label.color.r = 1.0
-            label.color.g = 1.0
-            label.color.b = 1.0
+            label.scale.z = 0.5
+            label.color.r = 1  # random_color[0]
+            label.color.g = 1  # random_color[1]
+            label.color.b = 1  # random_color[2]
             label.color.a = 1.0
 
             # Set label text (adjust depending on your message)
             label.text = labels[i] if i < len(labels) else "Object"
+            if i < len(confidences):
+                label.text += f" {confidences[i]:.2f}"
 
-            label.lifetime = DurationMsg()
-            label.lifetime.sec = int(self.config.worker.min_separation_s)
-            label.lifetime.nanosec = int(
-                (self.config.worker.min_separation_s % 1.0) * 1e9
-            )
+            label.lifetime = rospy.Duration(self.config.worker.min_separation_s)
             markers.markers.append(label)
 
         self.vis_3dboxes_pub.publish(markers)
 
+    def spin(self) -> None:
+        """Spin the ROS node."""
+        rospy.spin()
 
-def main(args=None) -> None:
-    """Main function to run the Detection VLM ROS node."""
-    rclpy.init(args=args)
+
+def main():
+    """Main function to start the Detection VLM ROS node."""
+    rospy.init_node("detection_vlm_node")
     node = DetectionVLMNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node.spin()
 
 
 if __name__ == "__main__":

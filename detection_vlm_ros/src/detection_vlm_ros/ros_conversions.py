@@ -29,6 +29,8 @@
 #
 """Module containing ROS message conversions."""
 
+import struct
+
 import cv2
 import cv_bridge
 import numpy as np
@@ -39,6 +41,40 @@ class Conversions:
     """Conversion namespace."""
 
     bridge = cv_bridge.CvBridge()
+
+    @staticmethod
+    def compressed_depth_to_cv2(msg: CompressedImage, depth_fmt: str):
+        # 'msg' as type CompressedImage
+
+        # remove header from raw data
+        depth_header_size = 12
+        raw_data = msg.data[depth_header_size:]
+
+        depth_img = cv2.imdecode(
+            np.fromstring(raw_data, np.uint8), cv2.IMREAD_UNCHANGED
+        )
+        if depth_img is None:
+            # probably wrong header size
+            raise Exception(
+                "Could not decode compressed depth image."
+                "You may need to change 'depth_header_size'!"
+            )
+
+        if depth_fmt == "32FC1":
+            raw_header = msg.data[:depth_header_size]
+            # header: int, float, float
+            [_, depthQuantA, depthQuantB] = struct.unpack("iff", raw_header)
+            depth_img_scaled = depthQuantA / (
+                depth_img.astype(np.float32) - depthQuantB
+            )
+            # filter max values
+            depth_img_scaled[depth_img == 0] = 0
+
+            # depth_img_scaled provides distance in meters as f32
+            # for storing it as png, we need to convert it to 16UC1 again (depth in mm)
+            depth_img = (depth_img_scaled * 1000).astype(np.uint16)
+
+        return (depth_img / 1000.0).astype(np.float32)
 
     @classmethod
     def to_image(cls, msg):
@@ -60,12 +96,16 @@ class Conversions:
         elif isinstance(msg, CompressedImage):
             format = msg.format
             format = format.strip()
-            # Convert BGR to RGB
-            image = cls.bridge.compressed_imgmsg_to_cv2(
-                msg, desired_encoding="passthrough"
-            )
-            if format == "bgr8" or format == "jpeg":
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            if format == "rgb8" or format == "bgr8" or format == "jpeg":
+                # Convert BGR to RGB
+                image = cls.bridge.compressed_imgmsg_to_cv2(
+                    msg, desired_encoding="passthrough"
+                )
+                if format == "bgr8" or format == "jpeg":
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            elif format == "32FC1" or format == "16UC1":
+                # Convert depth image to float32
+                image = Conversions.compressed_depth_to_cv2(msg, format)
             return image
         else:
             raise ValueError(f"Message type '{type(msg)}' not supported!")

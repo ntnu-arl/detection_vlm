@@ -1,0 +1,17 @@
+<launch>
+
+<arg name="viz" default="true" doc="Enable or disable RViz visualization"/>
+
+<include file="$(find mimosa)/launch/nene.launch"/> 
+
+<node pkg="rslidar_sdk" name="rslidar_sdk_node" type="rslidar_sdk_node" output="screen">
+    <param name="config_path" value=""/>
+  </node>
+
+<include file="$(find detection_vlm_ros)/launch/detection_vlm.launch"/>
+
+<include file="$(find detection_vlm_ros)/launch/cam_front_tf.launch"/>
+
+<node name="rviz" pkg="rviz" type="rviz" args="-d $(find detection_vlm_ros)/rviz/yoloe_unipilot.rviz" if="$(arg viz)" />
+
+</launch>

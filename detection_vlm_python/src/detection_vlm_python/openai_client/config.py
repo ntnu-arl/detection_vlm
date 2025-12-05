@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from spark_config import Config
+from detection_vlm_python.config import Config
 
 
 @dataclass

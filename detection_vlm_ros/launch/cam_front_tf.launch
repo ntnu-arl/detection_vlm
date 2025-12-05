@@ -1,0 +1,6 @@
+<launch>
+
+<!-- <node pkg="tf2_ros" type="static_transform_publisher" name="imu2camera" args="0.09062965536090069 0.0006839670838093073 0.0006690930610772361 0.6129881675864656 -0.609834432700579 0.3589520569031405 0.3514269368400133 mimosa_imu camera0"/> -->
+<node pkg="tf2_ros" type="static_transform_publisher" name="imu2camera" args="-0.00010746 0.09063457 -0.00011148 0.61298817 -0.60983443 0.35895206 -0.35142694 mimosa_imu camera0"/>
+
+</launch>

@@ -1,0 +1,33 @@
+<launch>
+
+<!-- Python environment path -->
+<arg name="python_env" default="$(find detection_vlm_python)/detection_vlm_env/bin/python" doc="Python environment"/>
+
+<!-- Config paths -->
+<arg name="config_path" default="$(find detection_vlm_ros)/config/detection_yoloe.yaml" doc="Path to the configuration file"/>
+<arg name="system_prompt_path" default="$(find detection_vlm_ros)/prompts/detection_system_prompt.txt" doc="Path to the system prompt file"/>
+<arg name="classes_file" default="$(find detection_vlm_ros)/config/classes.txt" doc="Path to the classes file"/>
+
+<!-- Topics -->
+<arg name="input_image_topic" default="/cam_front/synchronized/image_raw/compressed" doc="Input image topic"/>
+<arg name="input_pointcloud_topic" default="/mimosa_node/lidar/manager/points_full_res" doc="Input point cloud topic"/>
+<arg name="input_camera_info_topic" default="/camera/color/camera_info" doc="Input camera info topic"/>
+
+<!-- Frames -->
+<arg name="target_frame" default="mimosa_world" doc="Target frame for point cloud accumulation"/>
+<arg name="camera_frame" default="camera0" doc="Camera frame ID"/>
+<arg name="body_frame" default="mimosa_body" doc="Body frame ID"/>
+
+<node pkg="detection_vlm_ros" type="detection_vlm_node.py" name="detection_vlm_node" 
+      required="false" ns="detection_vlm" output="screen" launch-prefix="$(arg python_env)">
+    <rosparam file="$(arg config_path)" ns=""/>
+    <param name="vlm/system_prompt_path" value="$(arg system_prompt_path)"/>
+    <param name="target_frame" value="$(arg target_frame)"/>
+    <param name="camera_frame" value="$(arg camera_frame)"/>
+    <param name="body_frame" value="$(arg body_frame)"/>
+    <param name="classes_file" value="$(arg classes_file)"/>
+    <remap from="/detection_vlm/input_image" to="$(arg input_image_topic)"/>
+    <remap from="/detection_vlm/input_pointcloud" to="$(arg input_pointcloud_topic)"/>
+    <remap from="/detection_vlm/input_camera_info" to="$(arg input_camera_info_topic)"/>
+</node>
+</launch>

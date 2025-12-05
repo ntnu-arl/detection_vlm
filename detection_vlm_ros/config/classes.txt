@@ -1,0 +1,13 @@
+door
+trashcan
+lamp
+window
+bench
+table
+chair
+plant
+door 
+cabinet
+box
+panel
+palet

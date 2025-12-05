@@ -3,21 +3,18 @@
 
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import cv2
 import numpy as np
-import rclpy
-import yaml
-from rclpy.node import Node
+import rospy
 from sensor_msgs.msg import CompressedImage, Image
-from spark_config.config import Config, config_field
 from std_msgs.msg import Header
 
 import detection_vlm_python.models as models
 import detection_vlm_ros
-from detection_vlm_msgs.srv import SetPrompt
+from detection_vlm_msgs.srv import SetPrompt, SetPromptResponse
 from detection_vlm_python import ReasoningOutput
+from detection_vlm_python.config import Config, config_field
 from detection_vlm_ros import ImageWorker, ImageWorkerConfig
 from detection_vlm_ros.ros_conversions import Conversions
 
@@ -35,59 +32,38 @@ class ReasoningVLMNodeConfig(Config):
     compressed_image: bool = False
 
 
-class ReasoningVLMNode(Node):
+class ReasoningVLMNode:
     """ROS Node for Reasoning VLM."""
 
     def __init__(self) -> None:
         """Initialize Reasoning VLM Node."""
-        super().__init__("reasoning_vlm_node")
-        ros_config_params = (
-            self.declare_parameter("config", "").get_parameter_value().string_value
-        )
-
-        # Load configuration
-        config_path = (
-            self.declare_parameter("config_path", "").get_parameter_value().string_value
-        )
-        config_path = Path(config_path).expanduser().absolute()
-        if not config_path.exists() and config_path != "":
-            self.get_logger().warn(f"config path '{config_path}' does not exist!")
-            self.config = ReasoningVLMNodeConfig()
-        else:
-            self.config = Config.load(ReasoningVLMNodeConfig, config_path)
-        self.config.update(yaml.safe_load(ros_config_params))
-        self.prompt = self.config.prompt
-
-        # Initialize VLM model
+        self.config = detection_vlm_ros.load_from_ros(ReasoningVLMNodeConfig, ns="~")
         self.vlm_model = self.config.vlm.create()
-        self.get_logger().info(f"Initializing with {self.config.show()}")
-
-        # Initialize ROS components
+        rospy.loginfo(f"[{rospy.get_name()}] Initializing with {self.config.show()}")
         self.worker = ImageWorker(
-            self,
             self.config.worker,
             "input_image",
             CompressedImage if self.config.compressed_image else Image,
             self._spin_once,
         )
-        self.image_pub = self.create_publisher(Image, "reasoning_image", 1)
-        self.srv = self.create_service(SetPrompt, "set_prompt", self._handle_set_prompt)
-        self.get_logger().info("Reasoning VLM finished initializing!")
+        self.image_pub = rospy.Publisher("output_image", Image, queue_size=1)
+        self.prompt = self.config.prompt
+        self.srv = rospy.Service("set_prompt", SetPrompt, self._handle_set_prompt)
+        rospy.loginfo(f"[{rospy.get_name()}] finished initializing!")
 
-    def _handle_set_prompt(self, req: SetPrompt, response):
-        """Handle set prompt service call.
-        :param req: Service request containing the new prompt.
-        :return: Service response indicating success.
-        """
+    def _handle_set_prompt(self, req: SetPrompt) -> SetPromptResponse:
+        """Handle service call to set new reasoning prompt."""
         self.prompt = req.prompt
-        self.get_logger().info(f"Prompt updated to: {self.prompt}")
-        response.success = True
-        return response
+        if self.config.verbose:
+            rospy.loginfo(f"[{rospy.get_name()}] Prompt updated to: {self.prompt}")
+        return SetPromptResponse(success=True)
 
     def _spin_once(self, header: Header, image: np.ndarray) -> None:
         """Process incoming image message."""
         if self.config.verbose:
-            self.get_logger().info(f"Processing image at time {header.stamp.to_sec()}")
+            rospy.loginfo(
+                f"[{rospy.get_name()}] Processing image at time {header.stamp.to_sec()}"
+            )
 
         start_time = time.time()
         reasoning_output: ReasoningOutput = self.vlm_model.reason(image, self.prompt)
@@ -159,18 +135,20 @@ class ReasoningVLMNode(Node):
         self.image_pub.publish(output_msg)
 
         if self.config.verbose:
-            self.get_logger().info(
-                f"Published result with prob={prob:.2f} in {time.time() - start_time:.2f}s"
+            rospy.loginfo(
+                f"[{rospy.get_name()}] Published result with prob={prob:.2f} in {time.time() - start_time:.2f}s"
             )
 
+    def spin(self) -> None:
+        """Spin the ROS node."""
+        rospy.spin()
 
-def main(args=None) -> None:
-    """Main function to run the Detection VLM ROS node."""
-    rclpy.init(args=args)
+
+def main():
+    """Main function to start the Detection VLM ROS node."""
+    rospy.init_node("detection_vlm_node")
     node = ReasoningVLMNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node.spin()
 
 
 if __name__ == "__main__":

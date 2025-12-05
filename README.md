@@ -12,7 +12,7 @@ This package integrates two complementary vision-language model (VLM) modalities
 Both wrapped with ROS2/ROS nodes.
 
 **Important Note:** Only ROS2 Humble and ROS Noetic are currently supported.
-This instructions are for ROS2 Humble. For ROS Noetic check [this branch](https://github.com/ntnu-arl/detection_vlm/tree/noetic).
+This instructions are for ROS Noetic. For ROS2 Humble check [this branch](https://github.com/ntnu-arl/detection_vlm/tree/master).
 
 ---
 
@@ -33,7 +33,12 @@ This instructions are for ROS2 Humble. For ROS Noetic check [this branch](https:
 
 ### General Requirements
 
-These instructions assume that `ros-humble-desktop` is installed on **Ubuntu 22.04**. 
+These instructions assume that `ros-noetic-desktop-full` is installed on **Ubuntu 20.04**. 
+Install general dependencies:
+
+```bash
+sudo apt install python3-rosdep python3-catkin-tools python3-vcstool
+```
 
 ### Building
 
@@ -41,13 +46,16 @@ Build the repository:
 
 ```bash
 mkdir -p vlm_ws/src
-cd vlm_ws/src
+cd vlm_ws
+catkin init
+catkin config -DCMAKE_BUILD_TYPE=Release
 
-git clone git@github.com:ntnu-arl/detection_vlm.git -b ros2_humble detection_vlm
+cd src
+git clone git@github.com:ntnu-arl/detection_vlm.git -b noetic detection_vlm 
 rosdep install --from-paths . --ignore-src -r -y
 
 cd ..
-colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+catkin build
 ```
 
 ### Python Virtual Environment
@@ -73,10 +81,10 @@ Object detection is performed using either an open-vocabulary object detector (Y
 The detection vlm can be run with:
 
 ```bash
-ros2 launch detection_vlm_ros detection_vlm.launch.yaml
+roslaunch detection_vlm_ros detection_vlm.launch
 ```
 
-Input topics and necessary frame names (for TF querying) are set in [detection_vlm.launch.yaml](./detection_vlm_ros/launch/detection_vlm.launch.yaml).
+Input topics and necessary frame names (for TF querying) are set in [detection_vlm.launch](./detection_vlm_ros/launch/detection_vlm.launch).
 
 Note that in this launch file you can set which config file to use. We provide two config file examples:
 - YOLOe: [detection_yoloe.yaml](./detection_vlm_ros/config/detection_yoloe.yaml)
@@ -90,7 +98,7 @@ The detection vlm can be run with:
 
 ```bash
 export OPENAI_API_KEY=<Your OpenAI API key>
-ros2 launch detection_vlm_ros reasoning_vlm.launch.yaml
+roslaunch detection_vlm_ros reasoning_vlm.launch
 ```
 
 We provide a config file example here: [reasoning_vlm.yaml](./detection_vlm_ros/config/reasoning_vlm.yaml)

@@ -1,3 +1,32 @@
+# BSD 3-Clause License
+#
+# Copyright (c) 2021-2024, Massachusetts Institute of Technology.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
 """Module containing queue-based image processor."""
 
 import queue
@@ -5,9 +34,9 @@ import threading
 import time
 from dataclasses import dataclass
 
-import rclpy
-from spark_config import Config
+import rospy
 
+from detection_vlm_python.config import Config
 from detection_vlm_ros.ros_conversions import Conversions
 
 
@@ -27,11 +56,8 @@ class ImageWorkerConfig(Config):
 class ImageWorker:
     """Class to simplify message processing."""
 
-    def __init__(self, node, config, topic, type, callback, **kwargs):
+    def __init__(self, config, topic, type, callback, **kwargs):
         """Register worker with ros."""
-        self._node = node
-        self._node.context.on_shutdown(self.stop)
-
         self._config = config
         self._callback = callback
 
@@ -40,7 +66,12 @@ class ImageWorker:
         self._last_stamp = None
 
         self._queue = queue.Queue(maxsize=config.queue_size)
-        self._sub = node.create_subscription(type, topic, self.add_message, 1)
+
+        rospy.on_shutdown(self.stop)
+
+        self._sub = rospy.Subscriber(
+            topic, type, self.add_message, queue_size=1, **kwargs
+        )
         self.start()
 
     def add_message(self, msg):
@@ -81,13 +112,12 @@ class ImageWorker:
             except queue.Empty:
                 continue
 
-            curr_stamp = rclpy.time.Time.from_msg(msg.header.stamp)
             if self._last_stamp is not None:
-                diff_s = 1.0e-9 * (curr_stamp - self._last_stamp).nanoseconds
+                diff_s = (msg.header.stamp - self._last_stamp).to_sec()
                 if diff_s < self._config.min_separation_s:
                     continue
 
-            self._last_stamp = curr_stamp
+            self._last_stamp = msg.header.stamp
 
             img = Conversions.to_image(msg)
             self._callback(msg.header, img)

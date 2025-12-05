@@ -1,18 +1,15 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.16)
 project(detection_vlm_msgs)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+find_package(catkin REQUIRED message_generation std_msgs)
 
-find_package(ament_cmake REQUIRED)
-find_package(builtin_interfaces REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
+add_service_files(FILES SetPrompt.srv)
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  srv/SetPrompt.srv
-  DEPENDENCIES
-  builtin_interfaces
- )
+generate_messages(DEPENDENCIES std_msgs)
 
-ament_package()
+catkin_package(
+  CATKIN_DEPENDS message_runtime std_msgs
+  DEPENDS
+  INCLUDE_DIRS
+  LIBRARIES
+)

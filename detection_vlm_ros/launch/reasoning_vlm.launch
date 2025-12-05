@@ -1,0 +1,19 @@
+<launch>
+
+<!-- Python environment path -->
+<arg name="python_env" default="$(find detection_vlm_python)/detection_vlm_env/bin/python" doc="Python environment"/>
+
+<!-- Config paths -->
+<arg name="config_path" default="$(find detection_vlm_ros)/config/reasoning_vlm.yaml" doc="Path to the configuration file"/>
+<arg name="system_prompt_path" default="$(find detection_vlm_ros)/prompts/reasoning_system_prompt.txt" doc="Path to the system prompt file"/>
+
+<!-- Topic -->
+<arg name="input_image_topic" default="/cam_front/image_raw/compressed" doc="Input image topic"/>
+
+<node pkg="detection_vlm_ros" type="reasoning_vlm_node.py" name="reasoning_vlm_node" 
+      required="false" ns="reasoning_vlm" output="screen" launch-prefix="$(arg python_env)">
+    <rosparam file="$(arg config_path)" ns=""/>
+    <param name="vlm/system_prompt_path" value="$(arg system_prompt_path)"/>
+    <remap from="/reasoning_vlm/input_image" to="$(arg input_image_topic)"/>
+</node>
+</launch>

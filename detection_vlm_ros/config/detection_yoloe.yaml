@@ -1,41 +1,34 @@
 ---
+# Detection VLM configuration
 vlm:
   type: yoloe
-  model: yoloe-11l-seg-pf.pt
-  confidence_threshold: 0.5
+  model: yoloe-11l-seg-pf.pt  # yoloe-11l-seg-pf.pt, yoloe-11l-seg.pt
+  confidence_threshold: 0.6
   output_size: 640
   verbose: False
-  cuda: true
+  cuda: True
+
+# Detection prompt
 prompt: "Detect stairs" 
+# Image subscription parameters
 worker:
-  min_separation_s: 1.0
+  min_separation_s: 2.0
+compressed_image: True
+# Clustering parameters and map voxel size
 voxel_size: 0.15
 min_points_per_cluster: 8
 eps_dbscan: 0.3
-
+# Camera intrinsics
 camera_intrinsics:
   fx: 691.145659492411
   fy: 690.9547836776351
   cx: 716.2047407756927
   cy: 544.058250985693
+# Point cloud filtering parameters
+min_point_r: 1.5
+max_point_r: 20.0
+# Others
+use_tf_current_time: False
+use_masks_for_projection: True
+verbose: False
 
-lidar_to_body_transform:
-  translation:
-    x: -0.06605
-    y: -0.01878
-    z: 0.034
-  quaternion:
-    x: 0.707
-    y: 0.0
-    z: -0.707
-    w: 0.0
-# lidar_to_body_transform:
-#   translation:
-#     x: 0.034
-#     y: -0.01878
-#     z: -0.06605
-#   quaternion:
-#     x: 0.707
-#     y: -0.0
-#     z: -0.707
-#     w: 0.0

@@ -7,7 +7,7 @@
 
   <maintainer email="albert.g.puigjaner@ntnu.no">Albert Gassol Puigjaner</maintainer>
   <author email="albert.g.puigjaner@ntnu.no">Albert Gassol Puigjaner</author>
-  <license>TODO</license>
+  <license>BSD3</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <build_depend>rosidl_default_generators</build_depend>

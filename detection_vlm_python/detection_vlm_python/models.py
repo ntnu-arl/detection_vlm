@@ -36,6 +36,7 @@ from typing import List
 
 import numpy as np
 import torch
+import ultralytics.utils.ops
 from spark_config import Config, register_config
 
 from detection_vlm_python import BoundingBox, ReasoningOutput
@@ -71,7 +72,9 @@ class OpenAIDetectionVLM(OpenAIVLM):
         config.update(kwargs)
         return cls(config)
 
-    def detect(self, image: np.ndarray, prompt: str) -> List[BoundingBox]:
+    def detect(
+        self, image: np.ndarray, prompt: str, confidence_threshold: float = None
+    ) -> List[BoundingBox]:
         """Detect objects in the image based on the given prompt.
 
         :param image: Input image as a NumPy array.
@@ -127,6 +130,7 @@ class YOLOEDetection:
         self.model = YOLOE(self.config.model)
         if self.config.cuda:
             self.model.to("cuda")
+        self.names = self.model.names
 
     @classmethod
     def construct(cls, **kwargs):
@@ -135,7 +139,16 @@ class YOLOEDetection:
         config.update(kwargs)
         return cls(config)
 
-    def detect(self, image: np.ndarray, prompt: str) -> List[BoundingBox]:
+    def set_classes(self, class_names: List[str]) -> bool:
+        if "pf" in self.config.model:
+            return False  # PF models do not support setting classes
+        self.model.set_classes(class_names, self.model.get_text_pe(class_names))
+        self.names = {i: name for i, name in enumerate(class_names)}
+        return True
+
+    def detect(
+        self, image: np.ndarray, prompt: str, confidence_threshold: float = None
+    ) -> List[BoundingBox]:
         """Detect objects in the image based on the given prompt.
 
         :param image: Input image as a NumPy array.
@@ -145,13 +158,25 @@ class YOLOEDetection:
         results = self.model.predict(
             image,
             device="cuda" if self.config.cuda else "cpu",
-            conf=self.config.confidence_threshold,
+            conf=confidence_threshold
+            if confidence_threshold is not None
+            else self.config.confidence_threshold,
             imgsz=self.config.output_size,
             verbose=self.config.verbose,
         )
 
         bboxes = []
-        for box, label in zip(results[0].boxes.xyxy, results[0].boxes.cls):
+        if len(results[0].boxes.xyxy) == 0:
+            return bboxes
+        masks = (
+            ultralytics.utils.ops.scale_image(
+                results[0].masks.data.permute(1, 2, 0).cpu().numpy(), image.shape
+            ).transpose(2, 0, 1)
+            > 0.5
+        )
+        for box, label, conf, mask in zip(
+            results[0].boxes.xyxy, results[0].boxes.cls, results[0].boxes.conf, masks
+        ):
             x_min, y_min, x_max, y_max = box.cpu().numpy()
             class_id = int(label.cpu().numpy())
             bboxes.append(
@@ -161,6 +186,8 @@ class YOLOEDetection:
                     x1=int(x_max),
                     y1=int(y_max),
                     details=str(self.model.names[class_id]),
+                    confidence=float(conf.cpu().numpy()),
+                    mask=mask,
                 )
             )
         return bboxes

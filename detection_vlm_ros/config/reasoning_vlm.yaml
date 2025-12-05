@@ -3,8 +3,17 @@ vlm:
   type: openai
   client_config:
     model: gpt-5 
-prompt: "Could there be a person nearby this place?" 
+
+# Q&A prompt
+prompt: "Are the exits of this environment obstructed?" 
+# Image subscription parameters
 worker:
   min_separation_s: 40.0
+compressed_image: True
+
+# Visualization parameters
 overlay_alpha: 0.3
 footer_height: 80
+
+# Others
+verbose: False

@@ -29,7 +29,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 """Output dataclasses for detection_vlm_python."""
+
 from dataclasses import dataclass
+
+import numpy as np
 
 
 @dataclass
@@ -39,6 +42,8 @@ class BoundingBox:
     x1: int
     y1: int
     details: str
+    confidence: float = None
+    mask: np.ndarray = None
 
 
 @dataclass

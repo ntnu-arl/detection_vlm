@@ -1,10 +1,13 @@
 %YAML 1.2
 ---
 launch:
+# Python environment path
 - arg:
     name: python_env
     default: /home/developer/detection_vlm_venv/bin/python3
     description: Path to Python executable in the virtualenv
+
+# Configuration file path
 - arg:
     name: config_path
     default: $(find-pkg-share detection_vlm_ros)/config/detection_yoloe.yaml
@@ -16,10 +19,11 @@ launch:
     description: Path to the system prompt file
 
 - arg:
-    name: compressed_image
-    default: 'True'
-    description: Use compressed image topic
+    name: classes_file
+    default: $(find-pkg-share detection_vlm_ros)/config/classes.txt
+    description: Path to the classes file
 
+# Topics
 - arg:
     name: input_image_topic
     default: /cam_front/image_raw/compressed
@@ -35,6 +39,7 @@ launch:
     default: /camera/color/camera_info
     description: Input camera info topic
 
+# Frames
 - arg:
     name: target_frame
     default: mimosa_world
@@ -50,16 +55,6 @@ launch:
     default: mimosa_body
     description: Body frame of the robot
 
-- arg:
-    name: use_tf_current_time
-    default: 'True'
-    description: Use current time for TF lookups
-
-- arg:
-    name: verbose
-    default: 'False'
-    description: Enable verbose logging
-
 - node:
     pkg: detection_vlm_ros
     exec: detection_vlm_node.py
@@ -72,7 +67,7 @@ launch:
     - name: "config_path"
       value: "$(var config_path)"
     - name: config
-      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, target_frame: $(var target_frame), camera_frame: $(var camera_frame), body_frame: $(var body_frame), use_tf_current_time: $(var use_tf_current_time), compressed_image: $(var compressed_image), verbose: $(var verbose)}'
+      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, target_frame: $(var target_frame), camera_frame: $(var camera_frame), body_frame: $(var body_frame), classes_file: $(var classes_file)}'
       type: str
     remap:
     - from: "/detection_vlm/input_image"

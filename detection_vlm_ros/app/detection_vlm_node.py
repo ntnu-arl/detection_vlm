@@ -108,11 +108,15 @@ class DetectionVLMNodeConfig(Config):
     lidar_to_body_transform: Lidar2BodyTransform = field(
         default_factory=Lidar2BodyTransform
     )
+    min_point_r: float = 0.5
+    max_point_r: float = 20.0
     use_tf_current_time: bool = False
     voxel_size: float = 0.05
     min_points_per_cluster: int = 30
     eps_dbscan: float = 0.2
     compressed_image: bool = False
+    use_masks_for_projection: bool = True
+    classes_file: str = ""
     camera_intrinsics: CameraIntrinsics = field(default_factory=CameraIntrinsics)
 
 
@@ -137,10 +141,26 @@ class DetectionVLMNode(Node):
             self.config = Config.load(DetectionVLMNodeConfig, config_path)
         self.config.update(yaml.safe_load(ros_config_params))
         self.prompt = self.config.prompt
-
+        self._initialized = False
         # Initialize VLM model
         self.vlm_model = self.config.vlm.create()
+        self.confidence_threshold = self.vlm_model.config.confidence_threshold
         self.get_logger().info(f"Initializing with {self.config.show()}")
+
+        if "pf" not in self.config.vlm.model:
+            classes_file = Path(self.config.classes_file)
+            if classes_file.exists():
+                with classes_file.open("r") as f:
+                    class_names = [
+                        line.strip() for line in f.readlines() if line.strip()
+                    ]
+                success = self.vlm_model.set_classes(class_names)
+                if not success:
+                    self.get_logger().warn("Model does not support setting classes.")
+                elif self.config.verbose:
+                    self.get_logger().info(
+                        f"Loaded {len(class_names)} classes from {classes_file}."
+                    )
 
         # Set up image worker and ROS interfaces
         self.worker = ImageWorker(
@@ -177,6 +197,15 @@ class DetectionVLMNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.accumulated_cloud = o3d.geometry.PointCloud()
+
+        # Generate N different random colors for visualization, N is number of classes
+        names = list(self.vlm_model.names.values())
+        colors = np.random.randint(0, 255, size=(len(names), 3))
+        # Generate a dict mapping class names to colors
+        self.class_colors = {
+            names[i]: tuple(int(c) for c in colors[i]) for i in range(len(names))
+        }
+
         self.get_logger().info(f"Device: {self.vlm_model.model.device}")
         self.get_logger().info("Detection VLM node initialized.")
 
@@ -233,6 +262,20 @@ class DetectionVLMNode(Node):
             )
             # compute inverse transform
             body_cloud = tf2sm.do_transform_cloud(msg, lidar2body)
+            points_body = np.array(
+                list(
+                    pc2.read_points(
+                        body_cloud, field_names=("x", "y", "z"), skip_nans=True
+                    )
+                )
+            )
+            # Get indices of points within min/max radius
+            dists = np.linalg.norm(points_body, axis=1)
+            valid_indices = np.where(
+                (dists >= self.config.min_point_r) & (dists <= self.config.max_point_r)
+            )[0]
+            if valid_indices.size == 0:
+                return
 
             transformed_cloud = tf2sm.do_transform_cloud(body_cloud, body2world)
 
@@ -244,6 +287,7 @@ class DetectionVLMNode(Node):
                     )
                 )
             )
+            points = points[valid_indices]
             if points.size == 0:
                 return
 
@@ -283,8 +327,8 @@ class DetectionVLMNode(Node):
                 np.asarray(self.accumulated_cloud.points),
             )
             self.pcl_pub.publish(pcl_msg)
-        if self.config.verbose:
-            self.get_logger().info("Published accumulated point cloud.")
+            if self.config.verbose:
+                self.get_logger().info("Published accumulated point cloud.")
 
     def _handle_set_prompt(self, req: SetPrompt, response):
         """Handle set prompt service call.
@@ -316,25 +360,78 @@ class DetectionVLMNode(Node):
         detection_image = image.copy()
         detection_image = cv2.cvtColor(detection_image, cv2.COLOR_RGB2BGR)
         for bbox in bboxes:
-            random_color = tuple(np.random.randint(0, 255, size=3).tolist())
+            if bbox.details in self.class_colors:
+                random_color = self.class_colors[bbox.details]
+            else:
+                random_color = tuple(np.random.randint(0, 255, size=3).tolist())
+            random_color_bgr = (random_color[2], random_color[1], random_color[0])
             cv2.rectangle(
-                detection_image, (bbox.x0, bbox.y0), (bbox.x1, bbox.y1), random_color, 2
+                detection_image,
+                (bbox.x0, bbox.y0),
+                (bbox.x1, bbox.y1),
+                random_color_bgr,
+                2,
             )
+            text = bbox.details
+            if bbox.confidence is not None:
+                text += f" {bbox.confidence:.2f}"
             cv2.putText(
                 detection_image,
-                bbox.details,
+                text,
                 (bbox.x0, bbox.y0 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
-                random_color,
+                random_color_bgr,
                 2,
             )
+            if bbox.mask is not None:
+                colored_mask = np.zeros_like(detection_image, dtype=np.uint8)
+                colored_mask[bbox.mask] = random_color_bgr
+                alpha = 0.5
+                detection_image = cv2.addWeighted(
+                    detection_image, 1.0, colored_mask, alpha, 0
+                )
 
         ros_image = Conversions.to_sensor_image(detection_image)
         self.detections_image_pub.publish(ros_image)
 
         if len(self.accumulated_cloud.points) > 0 and self.fx is not None:
             self.process_3d_bboxes(header, bboxes, self.accumulated_cloud)
+
+    @staticmethod
+    def get_points_in_mask(
+        points_3d: np.ndarray, proj_points_uv: np.ndarray, mask: np.ndarray
+    ) -> np.ndarray:
+        """
+        :param points_3d: Nx3 numpy array
+        :param proj_points_uv: Nx2 numpy array (pixel [u, v] coords)
+        :param mask: HxW numpy array (True/False or 1/0)
+        :return: Mx3 numpy array of 3D points inside the mask
+        """
+
+        H, W = mask.shape
+
+        # round pixel coords and convert to int
+        uv = np.round(proj_points_uv).astype(int)
+
+        # keep points inside image bounds
+        valid = (
+            (uv[:, 0] >= 0)
+            & (uv[:, 0] < W)
+            & (uv[:, 1] >= 0)
+            & (uv[:, 1] < H)
+            & (points_3d[:, 2] > 0)
+        )
+
+        uv_valid = uv[valid]
+        pts_valid = points_3d[valid]
+
+        # check mask for those valid uv indices
+        mask_values = mask[uv_valid[:, 1], uv_valid[:, 0]]  # mask[y,x]
+
+        inside_mask = mask_values.astype(bool)
+
+        return pts_valid[inside_mask]
 
     def process_3d_bboxes(
         self,
@@ -391,18 +488,26 @@ class DetectionVLMNode(Node):
             bbs3d = BoundingBox3DArray()
             bbs3d.header = header
             all_labels = []
+            all_confidences = []
             for bbox in bboxes:
                 # Project 3D points → 2D image plane
                 u = (points[:, 0] * self.fx / points[:, 2]) + self.cx
                 v = (points[:, 1] * self.fy / points[:, 2]) + self.cy
-                mask = (
-                    (u >= bbox.x0)
-                    & (u <= bbox.x1)
-                    & (v >= bbox.y0)
-                    & (v <= bbox.y1)
-                    & (points[:, 2] > 0)
-                )
-                box_points = points[mask]
+                if self.config.use_masks_for_projection and bbox.mask is not None:
+                    box_points = self.get_points_in_mask(
+                        points, np.stack((u, v), axis=-1), bbox.mask
+                    )
+                    if len(box_points) < self.config.min_points_per_cluster:
+                        continue
+                else:
+                    mask = (
+                        (u >= bbox.x0)
+                        & (u <= bbox.x1)
+                        & (v >= bbox.y0)
+                        & (v <= bbox.y1)
+                        & (points[:, 2] > 0)
+                    )
+                    box_points = points[mask]
                 if len(box_points) < self.config.min_points_per_cluster:
                     continue
 
@@ -455,16 +560,18 @@ class DetectionVLMNode(Node):
                 bbox3d.size.z = extent[2]
                 bbs3d.boxes.append(bbox3d)
                 all_labels.append(bbox.details)
+                if bbox.confidence is not None:
+                    all_confidences.append(bbox.confidence)
 
             if len(bbs3d.boxes) > 0:
                 self.bbox3d_pub.publish(bbs3d)
-                self._pub_visualization_3dboxes(bbs3d, all_labels)
+                self._pub_visualization_3dboxes(bbs3d, all_labels, all_confidences)
 
         except Exception as e:
             self.get_logger().error(f"Error in process_3d_bboxes: {e}")
 
     def _pub_visualization_3dboxes(
-        self, msg: BoundingBox3DArray, labels: List[str]
+        self, msg: BoundingBox3DArray, labels: List[str], confidences: List[float]
     ) -> None:
         markers = MarkerArray()
         for i, box in enumerate(msg.boxes):
@@ -518,11 +625,13 @@ class DetectionVLMNode(Node):
 
             # Line color and thickness
             random_color = tuple(np.random.rand(3).tolist())
+            if i < len(labels) and labels[i] in self.class_colors:
+                random_color = tuple(c / 255.0 for c in self.class_colors[labels[i]])
             m.color.r = random_color[0]
             m.color.g = random_color[1]
             m.color.b = random_color[2]
             m.color.a = 1.0
-            m.scale.x = 0.02  # line thickness
+            m.scale.x = 0.05  # line thickness
 
             m.lifetime = DurationMsg()
             m.lifetime.sec = int(self.config.worker.min_separation_s)
@@ -553,6 +662,8 @@ class DetectionVLMNode(Node):
 
             # Set label text (adjust depending on your message)
             label.text = labels[i] if i < len(labels) else "Object"
+            if i < len(confidences):
+                label.text += f" {confidences[i]:.2f}"
 
             label.lifetime = DurationMsg()
             label.lifetime.sec = int(self.config.worker.min_separation_s)

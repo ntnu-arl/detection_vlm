@@ -4,7 +4,7 @@
     <version>0.0.0</version>
     <description>Package for detection_vlm_ros</description>
     <maintainer email="albert.g.puigjaner@ntnu.no">Albert Gassol Puigjaner</maintainer>
-    <license>None</license>
+    <license>BSD3</license>
 
     <buildtool_depend>catkin</buildtool_depend>
     <buildtool_depend>catkin_simple</buildtool_depend>

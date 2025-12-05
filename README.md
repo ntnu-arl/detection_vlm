@@ -43,7 +43,7 @@ Build the repository:
 mkdir -p vlm_ws/src
 cd vlm_ws/src
 
-git clone git@github.com:ntnu-arl/detection_vlm.git -b ros2_humble detection_vlm
+git clone git@github.com:ntnu-arl/detection_vlm.git detection_vlm
 rosdep install --from-paths . --ignore-src -r -y
 
 cd ..

@@ -35,6 +35,8 @@ from detection_vlm_python import BoundingBox
 from detection_vlm_python.config import Config, config_field
 from detection_vlm_ros import Conversions, ImageWorker, ImageWorkerConfig
 
+NO_SEMANTICS_COLOR = (200, 200, 200)
+
 
 @dataclass
 class CameraIntrinsics(Config):
@@ -86,6 +88,10 @@ class SemanticMapNodeConfig(Config):
     semantic_cluster_min_points: int = 3
     semantic_object_min_voxels: int = 3
     semantic_object_min_confidence: float = 0.4
+    semantic_object_node_height: float = 3.0
+    semantic_object_node_radius: float = 0.18
+    semantic_object_text_offset: float = 0.22
+    show_confidence: bool = False
     camera_intrinsics: CameraIntrinsics = field(default_factory=CameraIntrinsics)
     distortion_coeffs: DistortionCoeffs = field(default_factory=DistortionCoeffs)
 
@@ -394,7 +400,7 @@ class SemanticMapNode:
     @classmethod
     def _color_for_label(cls, label: str) -> Tuple[int, int, int]:
         if label == cls.NO_SEMANTICS_LABEL:
-            return (90, 90, 90)
+            return NO_SEMANTICS_COLOR
         digest = hashlib.sha1(label.encode("utf-8")).digest()
         return (
             64 + digest[0] % 160,
@@ -801,6 +807,7 @@ class SemanticMapNode:
                 continue
             label_mask = self.cached_label_indices == label_idx
             label_points = self.cached_centers[label_mask]
+            label_confidences = self.cached_label_confidences[label_mask]
             if len(label_points) < self.config.semantic_object_min_voxels:
                 continue
 
@@ -813,6 +820,7 @@ class SemanticMapNode:
                 cluster = label_points[indices]
                 if len(cluster) < self.config.semantic_object_min_voxels:
                     continue
+                cluster_confidence = float(np.mean(label_confidences[indices]))
                 aabb = o3d.geometry.AxisAlignedBoundingBox.create_from_points(
                     o3d.utility.Vector3dVector(cluster)
                 )
@@ -822,6 +830,7 @@ class SemanticMapNode:
                     header,
                     aabb,
                     label_name,
+                    cluster_confidence,
                     self.class_colors.get(label_name, (255, 255, 255)),
                 )
 
@@ -834,21 +843,26 @@ class SemanticMapNode:
         header: Header,
         aabb: o3d.geometry.AxisAlignedBoundingBox,
         label: str,
+        confidence: float,
         color_rgb: Tuple[int, int, int],
     ) -> int:
         center = aabb.get_center()
         extent = aabb.get_extent()
         dx, dy, dz = extent[0] / 2.0, extent[1] / 2.0, extent[2] / 2.0
-        corners = [
-            (-dx, -dy, -dz),
-            (dx, -dy, -dz),
-            (dx, dy, -dz),
-            (-dx, dy, -dz),
-            (-dx, -dy, dz),
-            (dx, -dy, dz),
-            (dx, dy, dz),
-            (-dx, dy, dz),
-        ]
+        corner_offsets = np.array(
+            [
+                (-dx, -dy, -dz),
+                (dx, -dy, -dz),
+                (dx, dy, -dz),
+                (-dx, dy, -dz),
+                (-dx, -dy, dz),
+                (dx, -dy, dz),
+                (dx, dy, dz),
+                (-dx, dy, dz),
+            ],
+            dtype=np.float64,
+        )
+        corners_world = corner_offsets + center
         edges = [
             (0, 1),
             (1, 2),
@@ -863,49 +877,98 @@ class SemanticMapNode:
             (2, 6),
             (3, 7),
         ]
-        marker = Marker()
-        marker.header = header
-        marker.header.frame_id = self.config.target_frame
-        marker.ns = "semantic_objects"
-        marker.id = marker_id
-        marker.type = Marker.LINE_LIST
-        marker.action = Marker.ADD
-        marker.pose = Pose()
-        marker.pose.position.x = center[0]
-        marker.pose.position.y = center[1]
-        marker.pose.position.z = center[2]
-        marker.pose.orientation.w = 1.0
-        for start, end in edges:
-            marker.points.append(Point(*corners[start]))
-            marker.points.append(Point(*corners[end]))
-        marker.scale.x = 0.05
-        marker.color.r = color_rgb[0] / 255.0
-        marker.color.g = color_rgb[1] / 255.0
-        marker.color.b = color_rgb[2] / 255.0
-        marker.color.a = 1.0
-        marker.lifetime = rospy.Duration(0)
-        markers.markers.append(marker)
+        node_center = np.array(
+            [center[0], center[1], self.config.semantic_object_node_height],
+            dtype=np.float64,
+        )
+
+        box_marker = Marker()
+        box_marker.header = header
+        box_marker.header.frame_id = self.config.target_frame
+        box_marker.ns = "semantic_objects"
+        box_marker.id = marker_id
+        box_marker.type = Marker.LINE_LIST
+        box_marker.action = Marker.ADD
+        box_marker.pose = Pose()
+        box_marker.pose.orientation.w = 1.0
+        for start_idx, end_idx in edges:
+            box_marker.points.append(Point(*corners_world[start_idx]))
+            box_marker.points.append(Point(*corners_world[end_idx]))
+        box_marker.scale.x = 0.2
+        box_marker.color.r = color_rgb[0] / 255.0
+        box_marker.color.g = color_rgb[1] / 255.0
+        box_marker.color.b = color_rgb[2] / 255.0
+        box_marker.color.a = 1.0
+        box_marker.lifetime = rospy.Duration(0)
+        markers.markers.append(box_marker)
+
+        connector = Marker()
+        connector.header = header
+        connector.header.frame_id = self.config.target_frame
+        connector.ns = "semantic_object_connectors"
+        connector.id = marker_id + 1
+        connector.type = Marker.LINE_LIST
+        connector.action = Marker.ADD
+        connector.pose = Pose()
+        connector.pose.orientation.w = 1.0
+        for corner_idx in (4, 5, 6, 7):
+            connector.points.append(Point(*corners_world[corner_idx]))
+            connector.points.append(Point(*node_center))
+        connector.scale.x = 0.2
+        connector.color.r = color_rgb[0] / 255.0
+        connector.color.g = color_rgb[1] / 255.0
+        connector.color.b = color_rgb[2] / 255.0
+        connector.color.a = 0.8
+        connector.lifetime = rospy.Duration(0)
+        markers.markers.append(connector)
+
+        sphere = Marker()
+        sphere.header = header
+        sphere.header.frame_id = self.config.target_frame
+        sphere.ns = "semantic_object_nodes"
+        sphere.id = marker_id + 2
+        sphere.type = Marker.SPHERE
+        sphere.action = Marker.ADD
+        sphere.pose.position.x = node_center[0]
+        sphere.pose.position.y = node_center[1]
+        sphere.pose.position.z = node_center[2]
+        sphere.pose.orientation.w = 1.0
+        sphere.scale.x = self.config.semantic_object_node_radius * 2.0
+        sphere.scale.y = self.config.semantic_object_node_radius * 2.0
+        sphere.scale.z = self.config.semantic_object_node_radius * 2.0
+        sphere.color.r = color_rgb[0] / 255.0
+        sphere.color.g = color_rgb[1] / 255.0
+        sphere.color.b = color_rgb[2] / 255.0
+        sphere.color.a = 0.95
+        sphere.lifetime = rospy.Duration(0)
+        markers.markers.append(sphere)
 
         text = Marker()
         text.header = header
         text.header.frame_id = self.config.target_frame
         text.ns = "semantic_object_labels"
-        text.id = marker_id + 1
+        text.id = marker_id + 3
         text.type = Marker.TEXT_VIEW_FACING
         text.action = Marker.ADD
-        text.pose.position.x = center[0]
-        text.pose.position.y = center[1]
-        text.pose.position.z = center[2] + dz + 0.2
+        text.pose.position.x = node_center[0]
+        text.pose.position.y = node_center[1]
+        text.pose.position.z = (
+            node_center[2]
+            + self.config.semantic_object_node_radius
+            + self.config.semantic_object_text_offset
+        )
         text.pose.orientation.w = 1.0
-        text.scale.z = 0.4
+        text.scale.z = 1.5
         text.color.r = 1.0
         text.color.g = 1.0
         text.color.b = 1.0
         text.color.a = 1.0
-        text.text = label
+        text.text = f"{label}"
+        if self.config.show_confidence:
+            text.text += f" {confidence:.2f}"
         text.lifetime = rospy.Duration(0)
         markers.markers.append(text)
-        return marker_id + 2
+        return marker_id + 4
 
     def spin(self) -> None:
         rospy.spin()

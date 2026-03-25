@@ -32,6 +32,10 @@ semantic_cluster_eps: 0.7
 semantic_cluster_min_points: 6
 semantic_object_min_voxels: 4
 semantic_object_min_confidence: 0.45
+semantic_object_node_height: 15.0
+semantic_object_node_radius: 0.4
+semantic_object_text_offset: 0.3
+show_confidence: False
 
 camera_intrinsics:
   fx: 691.145659492411

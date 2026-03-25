@@ -6,9 +6,6 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /VLM1/3d_boxes1
-        - /VLM1/accum_pcl1
-        - /VLM1/DBSCAN clusters1
       Splitter Ratio: 0.6367265582084656
     Tree Height: 1019
   - Class: rviz/Selection
@@ -213,7 +210,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/Image
           Enabled: true
-          Image Topic: /detection_vlm/detections_image
+          Image Topic: /semantic_map/detections_image
           Max Value: 1
           Median window: 5
           Min Value: 0
@@ -222,43 +219,6 @@ Visualization Manager:
           Queue Size: 2
           Transport Hint: raw
           Unreliable: false
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /detection_vlm/visualization_3d_bboxes
-          Name: 3d_boxes
-          Namespaces:
-            bbox3d_labels: true
-            bbox3d_wireframe: true
-          Queue Size: 100
-          Value: true
-        - Alpha: 0.30000001192092896
-          Autocompute Intensity Bounds: true
-          Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
-            Value: true
-          Axis: Z
-          Channel Name: intensity
-          Class: rviz/PointCloud2
-          Color: 255; 255; 255
-          Color Transformer: Intensity
-          Decay Time: 0
-          Enabled: true
-          Invert Rainbow: false
-          Max Color: 255; 255; 255
-          Min Color: 0; 0; 0
-          Name: accum_pcl
-          Position Transformer: XYZ
-          Queue Size: 10
-          Selectable: true
-          Size (Pixels): 3
-          Size (m): 0.05000000074505806
-          Style: Boxes
-          Topic: /detection_vlm/accumulated_pointcloud
-          Unreliable: false
-          Use Fixed Frame: true
-          Use rainbow: true
           Value: true
         - Alpha: 1
           Autocompute Intensity Bounds: true
@@ -276,20 +236,29 @@ Visualization Manager:
           Invert Rainbow: false
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
-          Name: DBSCAN clusters
+          Name: SemanticMap
           Position Transformer: XYZ
           Queue Size: 10
           Selectable: true
           Size (Pixels): 3
           Size (m): 0.07999999821186066
           Style: Boxes
-          Topic: /detection_vlm/debug_clusters_pointcloud
+          Topic: /semantic_map/semantic_map
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /semantic_map/semantic_objects
+          Name: objects
+          Namespaces:
+            semantic_object_labels: true
+            semantic_objects: true
+          Queue Size: 100
+          Value: true
       Enabled: true
-      Name: VLM
+      Name: Semantic
     - Class: rviz/TF
       Enabled: true
       Filter (blacklist): ""
@@ -355,7 +324,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 67.47019958496094
+      Distance: 18.270788192749023
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -363,17 +332,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.5319894552230835
-        Y: 1.7154712677001953
+        X: 1.4030425548553467
+        Y: 2.3623130321502686
         Z: -3.1339022825704888e-06
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.1247966289520264
+      Pitch: 0.7047973871231079
       Target Frame: mimosa_body
-      Yaw: 1.7575844526290894
+      Yaw: 2.397583246231079
     Saved: ~
 Window Geometry:
   Displays:

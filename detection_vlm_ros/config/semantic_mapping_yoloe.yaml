@@ -1,0 +1,50 @@
+---
+vlm:
+  type: yoloe
+  model: yoloe-11l-seg-pf.pt
+  confidence_threshold: 0.6
+  output_size: 640
+  verbose: False
+  cuda: True
+
+prompt: "Detect stairs"
+worker:
+  min_separation_s: 1.0
+compressed_image: True
+
+voxel_size: 0.25
+min_points_per_cluster: 10
+eps_dbscan: 0.55
+association_method: dbscan
+front_surface_cell_size_px: 20
+front_surface_depth_band: 0.22
+front_surface_depth_band_scale: 0.05
+front_surface_depth_percentile: 20.0
+front_surface_outlier_std_ratio: 1.4
+semantic_update_method: counter
+default_detection_confidence: 0.75
+semantic_publish_min_observations: 1
+semantic_publish_min_confidence: 0.0
+semantic_publish_period_s: 0.75
+publish_semantic_objects: True
+semantic_objects_period_s: 2.5
+semantic_cluster_eps: 0.7
+semantic_cluster_min_points: 6
+semantic_object_min_voxels: 4
+semantic_object_min_confidence: 0.45
+
+camera_intrinsics:
+  fx: 691.145659492411
+  fy: 690.9547836776351
+  cx: 716.2047407756927
+  cy: 544.058250985693
+distortion_coeffs:
+  k1: -0.03707321001795522
+  k2: -0.0023813890494599334
+  p1: -0.0007960309450442164
+  p2: 0.00024843756055811816
+
+min_point_r: 1.8
+max_point_r: 18.0
+use_tf_current_time: False
+verbose: False

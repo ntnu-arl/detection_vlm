@@ -98,6 +98,11 @@ class SemanticMapNodeConfig(Config):
     active_window_max_z: float = 4.0
     active_window_apply_to_updates: bool = True
     active_window_apply_to_visualization: bool = False
+    semantic_visualization_voxel_size: float = 0.75
+    semantic_visualization_max_points: int = 50000
+    semantic_object_visualization_voxel_size: float = 0.75
+    semantic_object_max_dirty_labels_per_cycle: int = 4
+    max_active_update_points: int = 30000
     camera_intrinsics: CameraIntrinsics = field(default_factory=CameraIntrinsics)
     distortion_coeffs: DistortionCoeffs = field(default_factory=DistortionCoeffs)
 
@@ -158,16 +163,24 @@ class SemanticMapNode:
                     rospy.logwarn(
                         f"[{rospy.get_name()}] Model does not support setting classes."
                     )
+                else:
+                    rospy.loginfo(
+                        f"[{rospy.get_name()}] Loaded {len(class_names)} classes from {classes_file}."
+                    )
+            else:
+                rospy.logwarn(
+                    f"[{rospy.get_name()}] Classes file {classes_file} does not exist. Using default classes from the model."
+                )
 
         self.srv = rospy.Service("set_prompt", SetPrompt, self._handle_set_prompt)
         self.detections_image_pub = rospy.Publisher(
             "detections_image", Image, queue_size=1
         )
         self.semantic_map_pub = rospy.Publisher(
-            "semantic_map", PointCloud2, queue_size=1
+            "semantic_map", PointCloud2, queue_size=1, latch=True
         )
         self.semantic_objects_pub = rospy.Publisher(
-            "semantic_objects", MarkerArray, queue_size=1
+            "semantic_objects", MarkerArray, queue_size=1, latch=True
         )
         self.pcl_sub = rospy.Subscriber(
             "input_pointcloud", PointCloud2, self._pcl_callback, queue_size=1
@@ -188,10 +201,13 @@ class SemanticMapNode:
         self.map_lock = threading.Lock()
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
-        self.accumulated_cloud = o3d.geometry.PointCloud()
+        self.geometry_points = np.empty((0, 3), dtype=np.float32)
+        self.geometry_key_to_index: Dict[Tuple[int, int, int], int] = {}
         self.semantic_voxels: Dict[Tuple[int, int, int], SemanticVoxel] = {}
-        self.semantic_map_dirty = False
-        self.semantic_objects_dirty = False
+        self.semantic_map_revision = 0
+        self.semantic_map_published_revision = -1
+        self.semantic_objects_revision = 0
+        self.semantic_objects_published_revision = -1
         self.latest_output_stamp = rospy.Time(0)
 
         self.label_names = list(self.vlm_model.names.values())
@@ -314,13 +330,7 @@ class SemanticMapNode:
                 return
 
             with self.map_lock:
-                new_cloud = o3d.geometry.PointCloud()
-                new_cloud.points = o3d.utility.Vector3dVector(points)
-                self.accumulated_cloud += new_cloud
-                self.accumulated_cloud = self.accumulated_cloud.voxel_down_sample(
-                    self.config.voxel_size
-                )
-                self._ensure_geometry_voxels(points)
+                self._upsert_geometry_points_locked(points)
                 self.latest_output_stamp = msg.header.stamp
         except (
             tf2_ros.LookupException,
@@ -389,20 +399,12 @@ class SemanticMapNode:
         active_center = self._lookup_active_window_center(header.stamp)
         with self.map_lock:
             self.latest_output_stamp = header.stamp
-            accumulated_points = np.asarray(self.accumulated_cloud.points).copy()
-        if (
-            self.config.active_window_enabled
-            and self.config.active_window_apply_to_updates
-            and active_center is not None
-        ):
-            accumulated_points = accumulated_points[
-                self._active_window_mask(accumulated_points, active_center)
-            ]
-        if len(accumulated_points) == 0:
+        active_points = self._snapshot_active_geometry_points(active_center)
+        if len(active_points) == 0:
             return
 
         cloud_snapshot = o3d.geometry.PointCloud()
-        cloud_snapshot.points = o3d.utility.Vector3dVector(accumulated_points)
+        cloud_snapshot.points = o3d.utility.Vector3dVector(active_points)
 
         if len(bboxes) > 0 and self.fx is not None:
             self._update_semantic_map(header, bboxes, cloud_snapshot, image.shape[:2])
@@ -442,25 +444,123 @@ class SemanticMapNode:
             64 + digest[2] % 160,
         )
 
-    def _ensure_geometry_voxels(self, points_world: np.ndarray) -> None:
+    def _append_new_semantic_visual_voxels_locked(
+        self,
+        voxel_keys: List[Tuple[int, int, int]],
+        voxels: List[SemanticVoxel],
+    ) -> None:
+        if not voxel_keys:
+            return
+        centers = np.array(
+            [self._voxel_center(key) for key in voxel_keys], dtype=np.float32
+        )
+        label_indices = np.full(len(voxel_keys), self.no_semantics_idx, dtype=np.int32)
+        confidences = np.zeros(len(voxel_keys), dtype=np.float32)
+        active = np.zeros(len(voxel_keys), dtype=bool)
+        rgb = np.empty(len(voxel_keys), dtype=np.float32)
+        for idx, voxel in enumerate(voxels):
+            is_active, label_idx, confidence = self._semantic_visual_state(voxel)
+            target_label = label_idx if label_idx is not None else self.no_semantics_idx
+            label_indices[idx] = target_label
+            confidences[idx] = confidence
+            active[idx] = is_active
+            rgb[idx] = self.label_packed_colors[target_label]
+            if is_active and target_label != self.no_semantics_idx:
+                self.label_voxel_keys[target_label].add(voxel_keys[idx])
+                self.object_dirty_labels.add(target_label)
+        new_records = np.column_stack((centers, rgb)).astype(np.float32, copy=False)
+        start_idx = len(self.semantic_cloud_records)
+        if start_idx == 0:
+            self.semantic_cloud_records = new_records
+            self.semantic_cloud_label_indices = label_indices
+            self.semantic_cloud_confidences = confidences
+            self.semantic_cloud_active = active
+        else:
+            self.semantic_cloud_records = np.vstack(
+                (self.semantic_cloud_records, new_records)
+            )
+            self.semantic_cloud_label_indices = np.concatenate(
+                (self.semantic_cloud_label_indices, label_indices)
+            )
+            self.semantic_cloud_confidences = np.concatenate(
+                (self.semantic_cloud_confidences, confidences)
+            )
+            self.semantic_cloud_active = np.concatenate(
+                (self.semantic_cloud_active, active)
+            )
+        for offset, voxel_key in enumerate(voxel_keys):
+            self.semantic_cloud_key_to_index[voxel_key] = start_idx + offset
+
+    def _upsert_geometry_points_locked(self, points_world: np.ndarray) -> None:
         if len(points_world) == 0:
             return
-        voxel_indices = np.unique(
-            np.floor(points_world / self.config.voxel_size).astype(np.int32), axis=0
+        voxel_indices = np.floor(points_world / self.config.voxel_size).astype(np.int32)
+        unique_voxels, first_indices = np.unique(
+            voxel_indices, axis=0, return_index=True
         )
-        new_voxel_added = False
+        representative_points = points_world[first_indices].astype(
+            np.float32, copy=False
+        )
+        new_geometry_keys: List[Tuple[int, int, int]] = []
+        new_geometry_points: List[np.ndarray] = []
+        new_semantic_keys: List[Tuple[int, int, int]] = []
+        new_semantic_voxels: List[SemanticVoxel] = []
         initial_scores = self._initial_scores()
-        for voxel_key in map(tuple, voxel_indices.tolist()):
+        for voxel_key_arr, rep_point in zip(
+            unique_voxels.tolist(), representative_points
+        ):
+            voxel_key = tuple(voxel_key_arr)
+            geometry_idx = self.geometry_key_to_index.get(voxel_key)
+            if geometry_idx is None:
+                geometry_idx = len(self.geometry_points) + len(new_geometry_keys)
+                self.geometry_key_to_index[voxel_key] = geometry_idx
+                new_geometry_keys.append(voxel_key)
+                new_geometry_points.append(rep_point)
+            else:
+                self.geometry_points[geometry_idx] = rep_point
             if voxel_key not in self.semantic_voxels:
-                voxel = SemanticVoxel(
-                    scores=initial_scores.copy(),
-                    observations=1,
-                )
+                voxel = SemanticVoxel(scores=initial_scores.copy(), observations=1)
                 self.semantic_voxels[voxel_key] = voxel
-                self._upsert_semantic_visual_voxel_locked(voxel_key, voxel, None)
-                new_voxel_added = True
-        if new_voxel_added:
-            self.semantic_map_dirty = True
+                new_semantic_keys.append(voxel_key)
+                new_semantic_voxels.append(voxel)
+        if new_geometry_points:
+            append_points = np.asarray(new_geometry_points, dtype=np.float32)
+            if len(self.geometry_points) == 0:
+                self.geometry_points = append_points
+            else:
+                self.geometry_points = np.vstack((self.geometry_points, append_points))
+        if new_semantic_voxels:
+            self._append_new_semantic_visual_voxels_locked(
+                new_semantic_keys, new_semantic_voxels
+            )
+            self.semantic_map_revision += 1
+
+    def _snapshot_active_geometry_points(self, active_center: np.ndarray) -> np.ndarray:
+        with self.map_lock:
+            points = self.geometry_points
+            if len(points) == 0:
+                return np.empty((0, 3), dtype=np.float32)
+            if (
+                self.config.active_window_enabled
+                and self.config.active_window_apply_to_updates
+                and active_center is not None
+            ):
+                active_mask = self._active_window_mask(points, active_center)
+                points = points[active_mask]
+            if len(points) == 0:
+                return np.empty((0, 3), dtype=np.float32)
+            max_points = int(self.config.max_active_update_points)
+            if max_points > 0 and len(points) > max_points:
+                if active_center is not None:
+                    dist2 = np.sum((points - active_center.reshape(1, 3)) ** 2, axis=1)
+                    keep_idx = np.argpartition(dist2, max_points - 1)[:max_points]
+                    points = points[keep_idx]
+                else:
+                    sample_idx = np.linspace(
+                        0, len(points) - 1, max_points, dtype=np.int32
+                    )
+                    points = points[sample_idx]
+            return points.copy()
 
     def _lookup_active_window_center(self, stamp: rospy.Time) -> np.ndarray:
         if not self.config.active_window_enabled:
@@ -510,16 +610,20 @@ class SemanticMapNode:
         return Header(frame_id=self.config.target_frame, stamp=stamp)
 
     def _semantic_map_timer_callback(self, _event) -> None:
-        if not self.semantic_map_dirty:
+        with self.map_lock:
+            revision = self.semantic_map_revision
+        if revision == self.semantic_map_published_revision:
             return
         self._publish_semantic_map(self._current_output_header())
-        self.semantic_map_dirty = False
+        self.semantic_map_published_revision = revision
 
     def _semantic_objects_timer_callback(self, _event) -> None:
-        if not self.semantic_objects_dirty:
+        with self.map_lock:
+            revision = self.semantic_objects_revision
+        if revision == self.semantic_objects_published_revision:
             return
         self._publish_semantic_objects(self._current_output_header())
-        self.semantic_objects_dirty = False
+        self.semantic_objects_published_revision = revision
 
     def _get_mask_points(
         self,
@@ -688,8 +792,8 @@ class SemanticMapNode:
                 self._update_semantic_voxels(selected_world, label_idx, bbox.confidence)
                 updated = True
             if updated:
-                self.semantic_map_dirty = True
-                self.semantic_objects_dirty = True
+                self.semantic_map_revision += 1
+                self.semantic_objects_revision += 1
             return updated
         except Exception as e:
             rospy.logerr(f"[{rospy.get_name()}] Error updating semantic map: {e}")
@@ -832,22 +936,67 @@ class SemanticMapNode:
             self.object_dirty_labels.add(prev_label_idx)
         if label_idx is not None:
             self.object_dirty_labels.add(label_idx)
-        self.semantic_objects_dirty = True
+        self.semantic_objects_revision += 1
+
+    def _downsample_visual_indices(
+        self,
+        points: np.ndarray,
+        confidences: np.ndarray,
+        voxel_size: float,
+        max_points: int,
+    ) -> np.ndarray:
+        if len(points) == 0:
+            return np.empty((0,), dtype=np.int32)
+        indices = np.arange(len(points), dtype=np.int32)
+        if voxel_size > self.config.voxel_size:
+            voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+            _, inverse = np.unique(voxel_indices, axis=0, return_inverse=True)
+            order = np.lexsort((-confidences, inverse))
+            ordered_inverse = inverse[order]
+            keep = np.ones(len(order), dtype=bool)
+            keep[1:] = ordered_inverse[1:] != ordered_inverse[:-1]
+            indices = indices[order[keep]]
+        if max_points > 0 and len(indices) > max_points:
+            sample_idx = np.linspace(0, len(indices) - 1, max_points, dtype=np.int32)
+            indices = indices[sample_idx]
+        return indices
 
     def _build_semantic_cloud_message(self, header: Header) -> Optional[PointCloud2]:
-        active_records = self.semantic_cloud_records[self.semantic_cloud_active]
+        with self.map_lock:
+            active_mask = self.semantic_cloud_active.copy()
+            active_records = self.semantic_cloud_records[active_mask].copy()
+            active_confidences = self.semantic_cloud_confidences[active_mask].copy()
         if len(active_records) == 0:
             return None
+        if len(active_records) != len(active_confidences):
+            rospy.logwarn_throttle(
+                2.0,
+                f"[{rospy.get_name()}] Semantic cloud snapshot mismatch: {len(active_records)} records vs {len(active_confidences)} confidences.",
+            )
+            size = min(len(active_records), len(active_confidences))
+            active_records = active_records[:size]
+            active_confidences = active_confidences[:size]
+            if size == 0:
+                return None
+        publish_idx = self._downsample_visual_indices(
+            active_records[:, :3],
+            active_confidences,
+            self.config.semantic_visualization_voxel_size,
+            self.config.semantic_visualization_max_points,
+        )
+        if len(publish_idx) == 0:
+            return None
+        publish_records = active_records[publish_idx]
         msg = PointCloud2()
         msg.header = Header(frame_id=self.config.target_frame, stamp=header.stamp)
         msg.height = 1
-        msg.width = len(active_records)
+        msg.width = len(publish_records)
         msg.fields = self.semantic_cloud_fields
         msg.is_bigendian = False
         msg.point_step = 16
         msg.row_step = msg.point_step * msg.width
         msg.is_dense = True
-        msg.data = active_records.astype(np.float32, copy=False).tobytes()
+        msg.data = publish_records.astype(np.float32, copy=False).tobytes()
         return msg
 
     @staticmethod
@@ -888,8 +1037,12 @@ class SemanticMapNode:
 
     def _rebuild_dirty_object_clusters(self) -> None:
         with self.map_lock:
-            dirty_labels = sorted(self.object_dirty_labels)
-            self.object_dirty_labels.clear()
+            dirty_labels_all = sorted(self.object_dirty_labels)
+            max_dirty = max(
+                1, int(self.config.semantic_object_max_dirty_labels_per_cycle)
+            )
+            dirty_labels = dirty_labels_all[:max_dirty]
+            self.object_dirty_labels = set(dirty_labels_all[max_dirty:])
             label_snapshots = {}
             for label_idx in dirty_labels:
                 if label_idx == self.no_semantics_idx:
@@ -913,9 +1066,11 @@ class SemanticMapNode:
                         np.empty((0,), dtype=np.float32),
                     )
                     continue
+                label_points = self.semantic_cloud_records[indices, :3].copy()
+                label_confidences = self.semantic_cloud_confidences[indices].copy()
                 label_snapshots[label_idx] = (
-                    self.semantic_cloud_records[indices, :3].copy(),
-                    self.semantic_cloud_confidences[indices].copy(),
+                    label_points,
+                    label_confidences,
                 )
 
         rebuilt = {}

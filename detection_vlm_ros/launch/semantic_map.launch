@@ -4,7 +4,7 @@
 <arg name="viz" default="true" doc="Enable or disable RViz visualization"/>
 <arg name="config_path" default="$(find detection_vlm_ros)/config/semantic_mapping_yoloe.yaml" doc="Path to the configuration file"/>
 <arg name="system_prompt_path" default="$(find detection_vlm_ros)/prompts/detection_system_prompt.txt" doc="Path to the system prompt file"/>
-<arg name="classes_file" default="" doc="Path to the classes file"/>
+<arg name="classes_file" default="$(find detection_vlm_ros)/config/classes.txt" doc="Path to the classes file"/>
 <arg name="input_image_topic" default="/cam_front/image_raw/compressed" doc="Input image topic"/>
 <arg name="input_pointcloud_topic" default="/mimosa_node/lidar/manager/points_full_res" doc="Input point cloud topic"/>
 <arg name="input_camera_info_topic" default="/camera/color/camera_info" doc="Input camera info topic"/>

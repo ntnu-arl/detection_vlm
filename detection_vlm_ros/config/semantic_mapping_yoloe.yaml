@@ -36,6 +36,12 @@ semantic_object_node_height: 15.0
 semantic_object_node_radius: 0.4
 semantic_object_text_offset: 0.3
 show_confidence: False
+active_window_enabled: True
+active_window_radius_xy: 12.0
+active_window_min_z: -10.0
+active_window_max_z: 50.0
+active_window_apply_to_updates: True
+active_window_apply_to_visualization: False
 
 camera_intrinsics:
   fx: 691.145659492411

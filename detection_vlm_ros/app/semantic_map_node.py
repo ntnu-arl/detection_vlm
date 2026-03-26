@@ -139,11 +139,11 @@ class SemanticMapNode:
         self.prompt = self.config.prompt
         self.confidence_threshold = self.vlm_model.config.confidence_threshold
         self.association_method = self.config.association_method.strip().lower()
-        if self.association_method not in {"dbscan", "front_surface"}:
+        if self.association_method not in {"dbscan", "front_surface", "none"}:
             rospy.logwarn(
-                f"[{rospy.get_name()}] Unknown association_method={self.config.association_method!r}, falling back to 'dbscan'."
+                f"[{rospy.get_name()}] Unknown association_method={self.config.association_method!r}, falling back to 'none'."
             )
-            self.association_method = "dbscan"
+            self.association_method = "none"
         self.semantic_update_method = self.config.semantic_update_method.strip().lower()
         if self.semantic_update_method not in {"counter", "bayes"}:
             rospy.logwarn(
@@ -716,7 +716,10 @@ class SemanticMapNode:
     ) -> np.ndarray:
         if self.association_method == "front_surface":
             return self._select_front_surface_points(box_points_camera, box_uv, rot, t)
-        return self._select_dbscan_cluster(box_points_camera, rot, t)
+        elif self.association_method == "dbscan":
+            return self._select_dbscan_cluster(box_points_camera, rot, t)
+        else:
+            return self._camera_to_world(box_points_camera, rot, t)
 
     def _update_semantic_map(
         self,

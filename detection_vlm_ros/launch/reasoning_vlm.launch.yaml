@@ -18,6 +18,11 @@ launch:
     default: $(find-pkg-share detection_vlm_ros)/prompts/reasoning_system_prompt.txt
     description: Path to the system prompt file
 
+- arg:
+    name: verbose
+    default: "false"
+    description: Enable verbose node logging
+
 # Topics
 - arg:
     name: input_image_topic
@@ -37,11 +42,8 @@ launch:
     - name: "config_path"
       value: "$(var config_path)"
       type: str
-    - name: "vlm/system_prompt_path" 
-      value: "$(var system_prompt_path)"
-      type: str
     - name: config
-      value: '{verbose: $(var verbose)}'
+      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, verbose: $(var verbose)}'
       type: str
     remap:
     - from: "/reasoning_vlm/input_image"

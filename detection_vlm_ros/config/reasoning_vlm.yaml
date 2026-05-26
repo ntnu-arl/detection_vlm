@@ -16,4 +16,7 @@ overlay_alpha: 0.3
 footer_height: 80
 
 # Others
+overlay: True
+runtime_logging_enabled: False
+runtime_log_file: /tmp/reasoning_vlm_runtimes.csv
 verbose: False

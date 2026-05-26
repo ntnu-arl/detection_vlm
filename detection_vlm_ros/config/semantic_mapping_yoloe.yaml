@@ -1,0 +1,78 @@
+---
+vlm:
+  type: yoloe
+  model: yoloe-11l-seg.pt
+  confidence_threshold: 0.25
+  output_size: 640
+  verbose: False
+  cuda: True
+
+prompt: "Detect stairs"
+worker:
+  min_separation_s: 1.0
+compressed_image: True
+
+voxel_size: 0.35
+min_points_per_cluster: 2
+eps_dbscan: 0.8
+association_method: dbscan
+front_surface_cell_size_px: 20
+front_surface_depth_band: 0.22
+front_surface_depth_band_scale: 0.05
+front_surface_depth_percentile: 20.0
+front_surface_outlier_std_ratio: 1.4
+semantic_update_method: counter
+default_detection_confidence: 0.75
+semantic_publish_min_observations: 1
+semantic_publish_min_confidence: 0.0
+semantic_publish_period_s: 1.5
+publish_semantic_objects: True
+semantic_objects_period_s: 4.0
+semantic_cluster_eps: 0.9
+semantic_cluster_min_points: 5
+semantic_object_min_voxels: 4
+semantic_object_min_confidence: 0.45
+semantic_object_node_height: 30.0
+semantic_object_node_radius: 0.7
+semantic_object_text_offset: 0.7
+show_confidence: False
+active_window_enabled: True
+active_window_radius_xy: 15.0
+active_window_min_z: -20.0
+active_window_max_z: 100.0
+active_window_apply_to_updates: True
+active_window_apply_to_visualization: False
+semantic_visualization_voxel_size: 0.5
+semantic_visualization_max_points: 100000000
+semantic_object_visualization_voxel_size: 0.0
+semantic_object_max_dirty_labels_per_cycle: 4
+max_active_update_points: 300000
+runtime_logging_enabled: False
+runtime_log_file: /tmp/semantic_map_runtimes.csv
+
+camera_intrinsics:
+  fx: 691.145659492411
+  fy: 690.9547836776351
+  cx: 716.2047407756927
+  cy: 544.05825098569
+distortion_coeffs:
+  k1: -0.03707321001795522
+  k2: -0.0023813890494599334
+  p1: -0.0007960309450442164
+  p2: 0.00024843756055811816
+
+lidar_to_body_transform:
+  translation:
+    x: -0.06605
+    y: -0.01878
+    z: 0.034
+  quaternion:
+    x: 0.707
+    y: 0.0
+    z: -0.707
+    w: 0.0
+
+min_point_r: 1.8
+max_point_r: 30.0
+use_tf_current_time: False
+verbose: True

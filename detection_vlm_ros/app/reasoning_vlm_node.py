@@ -31,9 +31,13 @@
 #
 """Reasoning VLM ROS node."""
 
+import csv
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -52,6 +56,10 @@ from detection_vlm_ros import ImageWorker, ImageWorkerConfig
 from detection_vlm_ros.ros_conversions import Conversions
 
 
+def to_sec(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 @dataclass
 class ReasoningVLMNodeConfig(Config):
     """Configuration for Reasoning VLM Node."""
@@ -62,7 +70,10 @@ class ReasoningVLMNodeConfig(Config):
     verbose: bool = False
     overlay_alpha: float = 0.3
     footer_height: int = 80
+    overlay: bool = True
     compressed_image: bool = False
+    runtime_logging_enabled: bool = False
+    runtime_log_file: str = "/tmp/reasoning_vlm_runtimes.csv"
 
 
 class ReasoningVLMNode(Node):
@@ -76,21 +87,30 @@ class ReasoningVLMNode(Node):
         )
 
         # Load configuration
-        config_path = (
+        config_path_param = (
             self.declare_parameter("config_path", "").get_parameter_value().string_value
         )
-        config_path = Path(config_path).expanduser().absolute()
-        if not config_path.exists() and config_path != "":
+        config_path = Path(config_path_param).expanduser().absolute()
+        if not config_path_param:
+            self.config = ReasoningVLMNodeConfig()
+        elif not config_path.exists():
             self.get_logger().warn(f"config path '{config_path}' does not exist!")
             self.config = ReasoningVLMNodeConfig()
         else:
             self.config = Config.load(ReasoningVLMNodeConfig, config_path)
-        self.config.update(yaml.safe_load(ros_config_params))
+        overrides = yaml.safe_load(ros_config_params) if ros_config_params else {}
+        if overrides:
+            self.config.update(overrides)
         self.prompt = self.config.prompt
 
         # Initialize VLM model
         self.vlm_model = self.config.vlm.create()
         self.get_logger().info(f"Initializing with {self.config.show()}")
+
+        self.runtime_log_lock = threading.Lock()
+        self.runtime_log_file = None
+        self.runtime_log_writer = None
+        self._init_runtime_logger()
 
         # Initialize ROS components
         self.worker = ImageWorker(
@@ -103,6 +123,76 @@ class ReasoningVLMNode(Node):
         self.image_pub = self.create_publisher(Image, "reasoning_image", 1)
         self.srv = self.create_service(SetPrompt, "set_prompt", self._handle_set_prompt)
         self.get_logger().info("Reasoning VLM finished initializing!")
+
+    def _init_runtime_logger(self) -> None:
+        if not self.config.runtime_logging_enabled:
+            return
+        log_path = Path(os.path.expandvars(self.config.runtime_log_file)).expanduser()
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not log_path.exists() or log_path.stat().st_size == 0
+            self.runtime_log_file = log_path.open("a", newline="", buffering=1)
+            self.runtime_log_writer = csv.DictWriter(
+                self.runtime_log_file,
+                fieldnames=[
+                    "wall_time_s",
+                    "ros_time_s",
+                    "module",
+                    "duration_ms",
+                    "select",
+                    "probability",
+                ],
+            )
+            if write_header:
+                self.runtime_log_writer.writeheader()
+            self.get_logger().info(f"Runtime logging enabled: {log_path}")
+        except Exception as e:
+            self.runtime_log_file = None
+            self.runtime_log_writer = None
+            self.get_logger().error(
+                f"Failed to initialize runtime logger at {log_path}: {e}"
+            )
+
+    def _close_runtime_logger(self) -> None:
+        with self.runtime_log_lock:
+            if self.runtime_log_file is None:
+                return
+            try:
+                self.runtime_log_file.close()
+            except Exception as e:
+                self.get_logger().warn(f"Failed to close runtime log file: {e}")
+            finally:
+                self.runtime_log_file = None
+                self.runtime_log_writer = None
+
+    def _log_runtime(
+        self,
+        module: str,
+        duration_ms: float,
+        header: Optional[Header] = None,
+        select: str = "",
+        probability: Optional[float] = None,
+    ) -> None:
+        if self.runtime_log_writer is None:
+            return
+        ros_time_s = ""
+        if header is not None and header.stamp is not None:
+            ros_time_s = f"{to_sec(header.stamp):.9f}"
+        row = {
+            "wall_time_s": f"{time.time():.9f}",
+            "ros_time_s": ros_time_s,
+            "module": module,
+            "duration_ms": f"{duration_ms:.3f}",
+            "select": select,
+            "probability": "" if probability is None else f"{probability:.6f}",
+        }
+        with self.runtime_log_lock:
+            if self.runtime_log_writer is None:
+                return
+            try:
+                self.runtime_log_writer.writerow(row)
+            except Exception as e:
+                self.get_logger().warn(f"Failed to write runtime log row: {e}")
 
     def _handle_set_prompt(self, req: SetPrompt, response):
         """Handle set prompt service call.
@@ -117,10 +207,18 @@ class ReasoningVLMNode(Node):
     def _spin_once(self, header: Header, image: np.ndarray) -> None:
         """Process incoming image message."""
         if self.config.verbose:
-            self.get_logger().info(f"Processing image at time {header.stamp.to_sec()}")
+            self.get_logger().info(f"Processing image at time {to_sec(header.stamp)}")
 
         start_time = time.time()
         reasoning_output: ReasoningOutput = self.vlm_model.reason(image, self.prompt)
+        vlm_runtime_ms = (time.time() - start_time) * 1000.0
+        self._log_runtime(
+            "reasoning_vlm",
+            vlm_runtime_ms,
+            header,
+            select=str(reasoning_output.select),
+            probability=reasoning_output.probability,
+        )
 
         # Generate color based on probability (red→green)
         prob = np.clip(reasoning_output.probability, 0.0, 1.0)
@@ -128,13 +226,16 @@ class ReasoningVLMNode(Node):
 
         output_image = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
         overlay = np.full_like(output_image, color, dtype=np.uint8)
-        heatmap = cv2.addWeighted(
-            output_image,
-            1 - self.config.overlay_alpha,
-            overlay,
-            self.config.overlay_alpha,
-            0,
-        )
+        if self.config.overlay:
+            heatmap = cv2.addWeighted(
+                output_image,
+                1 - self.config.overlay_alpha,
+                overlay,
+                self.config.overlay_alpha,
+                0,
+            )
+        else:
+            heatmap = output_image
 
         # Prepare text
         prob_text = f"Probability: {prob:.2f}"
@@ -190,8 +291,12 @@ class ReasoningVLMNode(Node):
 
         if self.config.verbose:
             self.get_logger().info(
-                f"Published result with prob={prob:.2f} in {time.time() - start_time:.2f}s"
+                f"Published result with prob={prob:.2f}; VLM runtime={vlm_runtime_ms / 1000.0:.2f}s"
             )
+
+    def destroy_node(self) -> bool:
+        self._close_runtime_logger()
+        return super().destroy_node()
 
 
 def main(args=None) -> None:

@@ -10,7 +10,7 @@ launch:
 # Configuration file path
 - arg:
     name: config_path
-    default: $(find-pkg-share detection_vlm_ros)/config/detection_yoloe.yaml
+    default: $(find-pkg-share detection_vlm_ros)/config/semantic_mapping_yoloe.yaml
     description: Path to the configuration file
 
 - arg:
@@ -22,16 +22,6 @@ launch:
     name: classes_file
     default: $(find-pkg-share detection_vlm_ros)/config/classes.txt
     description: Path to the classes file
-
-- arg:
-    name: debug_clusters
-    default: "true"
-    description: Publish colored point clusters used for 3D association
-
-- arg:
-    name: keep_boxes
-    default: "false"
-    description: Keep old 3D box markers in RViz
 
 # Topics
 - arg:
@@ -53,7 +43,7 @@ launch:
 - arg:
     name: target_frame
     default: mimosa_world
-    description: Target frame for point cloud accumulation
+    description: Target frame for semantic map accumulation
 
 - arg:
     name: camera_frame
@@ -67,9 +57,9 @@ launch:
 
 - node:
     pkg: detection_vlm_ros
-    exec: detection_vlm_node.py
-    name: detection_vlm_node
-    namespace: detection_vlm
+    exec: semantic_map_node.py
+    name: semantic_map_node
+    namespace: semantic_map
     output: screen
     on_exit: shutdown
     launch-prefix: $(var python_env)
@@ -77,12 +67,12 @@ launch:
     - name: "config_path"
       value: "$(var config_path)"
     - name: config
-      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, target_frame: $(var target_frame), camera_frame: $(var camera_frame), body_frame: $(var body_frame), classes_file: $(var classes_file), publish_debug_clusters: $(var debug_clusters), keep_boxes: $(var keep_boxes)}'
+      value: '{vlm: {system_prompt_path: $(var system_prompt_path)}, target_frame: $(var target_frame), camera_frame: $(var camera_frame), body_frame: $(var body_frame), classes_file: $(var classes_file)}'
       type: str
     remap:
-    - from: "/detection_vlm/input_image"
+    - from: "/semantic_map/input_image"
       to: "$(var input_image_topic)"
-    - from: "/detection_vlm/input_pointcloud"
+    - from: "/semantic_map/input_pointcloud"
       to: "$(var input_pointcloud_topic)"
-    - from: "/detection_vlm/input_camera_info"
+    - from: "/semantic_map/input_camera_info"
       to: "$(var input_camera_info_topic)"

@@ -7,7 +7,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 
-install(PROGRAMS app/detection_vlm_node.py app/reasoning_vlm_node.py
+install(PROGRAMS
+        app/detection_vlm_node.py
+        app/reasoning_vlm_node.py
+        app/semantic_map_node.py
         DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})

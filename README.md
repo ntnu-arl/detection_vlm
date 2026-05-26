@@ -27,7 +27,6 @@ The Humble branch is documented here. For ROS Noetic, see the
   - [Detection VLM](#detection-vlm)
   - [Semantic Map](#semantic-map)
   - [Q&A VLM](#qa-vlm)
-  - [Runtime Logging](#runtime-logging)
 - [License](#license)
 - [Contact](#contact)
 

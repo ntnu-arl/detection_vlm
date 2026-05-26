@@ -10,7 +10,6 @@ door
 cabinet
 box
 panel
-person
 bicycle
 tree
 car

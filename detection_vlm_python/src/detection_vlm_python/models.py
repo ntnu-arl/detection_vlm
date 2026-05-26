@@ -110,7 +110,7 @@ class OpenAIReasonVLM(OpenAIVLM):
         result, success = self.client.inference(image, prompt)
         if not success:
             return ReasoningOutput(
-                select=False, probability=0.0, explanation="Reasoning failed."
+                select="No", confidence=0.0, explanation="Reasoning failed."
             )
 
         return ReasoningOutput(**result)

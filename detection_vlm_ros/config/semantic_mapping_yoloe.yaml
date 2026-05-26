@@ -2,7 +2,7 @@
 vlm:
   type: yoloe
   model: yoloe-11l-seg.pt
-  confidence_threshold: 0.35
+  confidence_threshold: 0.25
   output_size: 640
   verbose: False
   cuda: True
@@ -33,8 +33,8 @@ semantic_cluster_min_points: 5
 semantic_object_min_voxels: 4
 semantic_object_min_confidence: 0.45
 semantic_object_node_height: 30.0
-semantic_object_node_radius: 0.35
-semantic_object_text_offset: 0.25
+semantic_object_node_radius: 0.7
+semantic_object_text_offset: 0.7
 show_confidence: False
 active_window_enabled: True
 active_window_radius_xy: 15.0
@@ -49,17 +49,16 @@ semantic_object_max_dirty_labels_per_cycle: 4
 max_active_update_points: 300000
 
 camera_intrinsics:
-  fx: 689.9272234960254
-  fy: 689.9163888108998
-  cx: 663.9428319007329
-  cy: 499.3552239182778
+  fx: 691.145659492411
+  fy: 690.9547836776351
+  cx: 716.2047407756927
+  cy: 544.05825098569
 distortion_coeffs:
-  k1: -0.04067111373969070
-  k2: 0.003126177356056777
-  p1: -0.004046152244583798
-  p2: 0.000943198002567342
-
+  k1: -0.03707321001795522
+  k2: -0.0023813890494599334
+  p1: -0.0007960309450442164
+  p2: 0.00024843756055811816
 min_point_r: 1.8
 max_point_r: 30.0
 use_tf_current_time: False
-verbose: False
+verbose: True

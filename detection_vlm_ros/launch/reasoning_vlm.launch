@@ -2,6 +2,7 @@
 
 <!-- Python environment path -->
 <arg name="python_env" default="$(find detection_vlm_python)/detection_vlm_env/bin/python" doc="Python environment"/>
+<arg name="viz" default="true" doc="Enable or disable RViz visualization"/>
 
 <!-- Config paths -->
 <arg name="config_path" default="$(find detection_vlm_ros)/config/reasoning_vlm.yaml" doc="Path to the configuration file"/>
@@ -16,4 +17,7 @@
     <param name="vlm/system_prompt_path" value="$(arg system_prompt_path)"/>
     <remap from="/reasoning_vlm/input_image" to="$(arg input_image_topic)"/>
 </node>
+
+<node name="rviz" pkg="rviz" type="rviz" args="-d $(find detection_vlm_ros)/rviz/reasoning.rviz" if="$(arg viz)" />
+
 </launch>

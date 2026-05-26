@@ -31,8 +31,13 @@
 #
 """Reasoning VLM ROS node."""
 
+import csv
+import os
+import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -59,7 +64,10 @@ class ReasoningVLMNodeConfig(Config):
     verbose: bool = False
     overlay_alpha: float = 0.3
     footer_height: int = 80
+    overlay: bool = True
     compressed_image: bool = False
+    runtime_logging_enabled: bool = False
+    runtime_log_file: str = "/tmp/reasoning_vlm_runtimes.csv"
 
 
 class ReasoningVLMNode:
@@ -70,6 +78,12 @@ class ReasoningVLMNode:
         self.config = detection_vlm_ros.load_from_ros(ReasoningVLMNodeConfig, ns="~")
         self.vlm_model = self.config.vlm.create()
         rospy.loginfo(f"[{rospy.get_name()}] Initializing with {self.config.show()}")
+
+        self.runtime_log_lock = threading.Lock()
+        self.runtime_log_file = None
+        self.runtime_log_writer = None
+        self._init_runtime_logger()
+
         self.worker = ImageWorker(
             self.config.worker,
             "input_image",
@@ -80,6 +94,82 @@ class ReasoningVLMNode:
         self.prompt = self.config.prompt
         self.srv = rospy.Service("set_prompt", SetPrompt, self._handle_set_prompt)
         rospy.loginfo(f"[{rospy.get_name()}] finished initializing!")
+
+    def _init_runtime_logger(self) -> None:
+        if not self.config.runtime_logging_enabled:
+            return
+        log_path = Path(os.path.expandvars(self.config.runtime_log_file)).expanduser()
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not log_path.exists() or log_path.stat().st_size == 0
+            self.runtime_log_file = log_path.open("a", newline="", buffering=1)
+            self.runtime_log_writer = csv.DictWriter(
+                self.runtime_log_file,
+                fieldnames=[
+                    "wall_time_s",
+                    "ros_time_s",
+                    "module",
+                    "duration_ms",
+                    "select",
+                    "confidence",
+                ],
+            )
+            if write_header:
+                self.runtime_log_writer.writeheader()
+            rospy.on_shutdown(self._close_runtime_logger)
+            rospy.loginfo(f"[{rospy.get_name()}] Runtime logging enabled: {log_path}")
+        except Exception as e:
+            self.runtime_log_file = None
+            self.runtime_log_writer = None
+            rospy.logerr(
+                f"[{rospy.get_name()}] Failed to initialize runtime logger at {log_path}: {e}"
+            )
+
+    def _close_runtime_logger(self) -> None:
+        with self.runtime_log_lock:
+            if self.runtime_log_file is None:
+                return
+            try:
+                self.runtime_log_file.close()
+            except Exception as e:
+                rospy.logwarn(
+                    f"[{rospy.get_name()}] Failed to close runtime log file: {e}"
+                )
+            finally:
+                self.runtime_log_file = None
+                self.runtime_log_writer = None
+
+    def _log_runtime(
+        self,
+        module: str,
+        duration_ms: float,
+        header: Optional[Header] = None,
+        select: str = "",
+        confidence: Optional[float] = None,
+    ) -> None:
+        if self.runtime_log_writer is None:
+            return
+        ros_time_s = ""
+        if header is not None and header.stamp is not None:
+            ros_time_s = f"{header.stamp.to_sec():.9f}"
+        row = {
+            "wall_time_s": f"{time.time():.9f}",
+            "ros_time_s": ros_time_s,
+            "module": module,
+            "duration_ms": f"{duration_ms:.3f}",
+            "select": select,
+            "confidence": "" if confidence is None else f"{confidence:.6f}",
+        }
+        with self.runtime_log_lock:
+            if self.runtime_log_writer is None:
+                return
+            try:
+                self.runtime_log_writer.writerow(row)
+            except Exception as e:
+                rospy.logwarn_throttle(
+                    5.0,
+                    f"[{rospy.get_name()}] Failed to write runtime log row: {e}",
+                )
 
     def _handle_set_prompt(self, req: SetPrompt) -> SetPromptResponse:
         """Handle service call to set new reasoning prompt."""
@@ -97,23 +187,39 @@ class ReasoningVLMNode:
 
         start_time = time.time()
         reasoning_output: ReasoningOutput = self.vlm_model.reason(image, self.prompt)
+        vlm_runtime_ms = (time.time() - start_time) * 1000.0
+        self._log_runtime(
+            "reasoning_vlm",
+            vlm_runtime_ms,
+            header,
+            select=reasoning_output.select,
+            confidence=reasoning_output.confidence,
+        )
 
-        # Generate color based on probability (red→green)
-        prob = np.clip(reasoning_output.probability, 0.0, 1.0)
-        color = (0, int(255 * prob), int(255 * (1 - prob)))  # BGR (red→green)
+        # Generate color based on confidence (red→green)
+        conf = np.clip(reasoning_output.confidence, 0.0, 1.0)
+        if reasoning_output.select.lower() == "yes":
+            # color: confidence 0 → yellow, confidence 1 → green
+            color = (0, 255, int(255 * (1 - conf)))  # BGR (yellow→green)
+        else:
+            # color: confidence 0 → yellow, confidence 1 → red
+            color = (0, int(255 * (1 - conf)), 255)  # BGR (yellow→red)
 
         output_image = cv2.cvtColor(image.copy(), cv2.COLOR_RGB2BGR)
         overlay = np.full_like(output_image, color, dtype=np.uint8)
-        heatmap = cv2.addWeighted(
-            output_image,
-            1 - self.config.overlay_alpha,
-            overlay,
-            self.config.overlay_alpha,
-            0,
-        )
+        if self.config.overlay:
+            heatmap = cv2.addWeighted(
+                output_image,
+                1 - self.config.overlay_alpha,
+                overlay,
+                self.config.overlay_alpha,
+                0,
+            )
+        else:
+            heatmap = output_image
 
         # Prepare text
-        prob_text = f"Probability: {prob:.2f}"
+        conf_text = f"Answer: {reasoning_output.select}, Confidence: {conf:.2f}"
         expl_text = reasoning_output.explanation or "No explanation provided"
 
         # Font settings
@@ -151,7 +257,7 @@ class ReasoningVLMNode:
 
         # --- Draw text ---
         y0 = output_image.shape[0] + 25
-        cv2.putText(combined, prob_text, (10, y0), font, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(combined, conf_text, (10, y0), font, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
 
         y = y0 + 30
         for line in lines:
@@ -166,7 +272,7 @@ class ReasoningVLMNode:
 
         if self.config.verbose:
             rospy.loginfo(
-                f"[{rospy.get_name()}] Published result with prob={prob:.2f} in {time.time() - start_time:.2f}s"
+                f"[{rospy.get_name()}] Published result with conf={conf:.2f}; VLM runtime={vlm_runtime_ms / 1000.0:.2f}s"
             )
 
     def spin(self) -> None:

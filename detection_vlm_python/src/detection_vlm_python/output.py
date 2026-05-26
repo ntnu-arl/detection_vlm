@@ -46,6 +46,6 @@ class BoundingBox:
 
 @dataclass
 class ReasoningOutput:
-    select: bool
-    probability: float
+    select: str
+    confidence: float
     explanation: str

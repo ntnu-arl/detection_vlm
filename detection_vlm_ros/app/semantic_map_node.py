@@ -6,7 +6,9 @@
 #
 """Semantic map ROS node."""
 
+import csv
 import hashlib
+import os
 import struct
 import threading
 import time
@@ -103,6 +105,8 @@ class SemanticMapNodeConfig(Config):
     semantic_object_visualization_voxel_size: float = 0.75
     semantic_object_max_dirty_labels_per_cycle: int = 4
     max_active_update_points: int = 30000
+    runtime_logging_enabled: bool = False
+    runtime_log_file: str = "/tmp/semantic_map_runtimes.csv"
     camera_intrinsics: CameraIntrinsics = field(default_factory=CameraIntrinsics)
     distortion_coeffs: DistortionCoeffs = field(default_factory=DistortionCoeffs)
 
@@ -129,6 +133,11 @@ class SemanticMapNode:
         self.config = detection_vlm_ros.load_from_ros(SemanticMapNodeConfig, ns="~")
         self.vlm_model = self.config.vlm.create()
         rospy.loginfo(f"[{rospy.get_name()}] Initializing with {self.config.show()}")
+
+        self.runtime_log_lock = threading.Lock()
+        self.runtime_log_file = None
+        self.runtime_log_writer = None
+        self._init_runtime_logger()
 
         self.worker = ImageWorker(
             self.config.worker,
@@ -261,6 +270,94 @@ class SemanticMapNode:
         rospy.loginfo(f"[{rospy.get_name()}] Device: {self.vlm_model.model.device}")
         rospy.loginfo(f"[{rospy.get_name()}] finished initializing!")
 
+    def _init_runtime_logger(self) -> None:
+        if not self.config.runtime_logging_enabled:
+            return
+        log_path = Path(os.path.expandvars(self.config.runtime_log_file)).expanduser()
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not log_path.exists() or log_path.stat().st_size == 0
+            self.runtime_log_file = log_path.open("a", newline="", buffering=1)
+            self.runtime_log_writer = csv.DictWriter(
+                self.runtime_log_file,
+                fieldnames=[
+                    "wall_time_s",
+                    "ros_time_s",
+                    "module",
+                    "duration_ms",
+                    "detections",
+                    "active_points",
+                    "updated",
+                    "semantic_objects",
+                    "markers",
+                    "notes",
+                ],
+            )
+            if write_header:
+                self.runtime_log_writer.writeheader()
+            rospy.on_shutdown(self._close_runtime_logger)
+            rospy.loginfo(f"[{rospy.get_name()}] Runtime logging enabled: {log_path}")
+        except Exception as e:
+            self.runtime_log_file = None
+            self.runtime_log_writer = None
+            rospy.logerr(
+                f"[{rospy.get_name()}] Failed to initialize runtime logger at {log_path}: {e}"
+            )
+
+    def _close_runtime_logger(self) -> None:
+        with self.runtime_log_lock:
+            if self.runtime_log_file is None:
+                return
+            try:
+                self.runtime_log_file.close()
+            except Exception as e:
+                rospy.logwarn(
+                    f"[{rospy.get_name()}] Failed to close runtime log file: {e}"
+                )
+            finally:
+                self.runtime_log_file = None
+                self.runtime_log_writer = None
+
+    def _log_runtime(
+        self,
+        module: str,
+        duration_ms: float,
+        header: Optional[Header] = None,
+        detections: Optional[int] = None,
+        active_points: Optional[int] = None,
+        updated: Optional[bool] = None,
+        semantic_objects: Optional[int] = None,
+        markers: Optional[int] = None,
+        notes: str = "",
+    ) -> None:
+        if self.runtime_log_writer is None:
+            return
+        ros_time_s = ""
+        if header is not None and header.stamp is not None:
+            ros_time_s = f"{header.stamp.to_sec():.9f}"
+        row = {
+            "wall_time_s": f"{time.time():.9f}",
+            "ros_time_s": ros_time_s,
+            "module": module,
+            "duration_ms": f"{duration_ms:.3f}",
+            "detections": "" if detections is None else detections,
+            "active_points": "" if active_points is None else active_points,
+            "updated": "" if updated is None else int(updated),
+            "semantic_objects": "" if semantic_objects is None else semantic_objects,
+            "markers": "" if markers is None else markers,
+            "notes": notes,
+        }
+        with self.runtime_log_lock:
+            if self.runtime_log_writer is None:
+                return
+            try:
+                self.runtime_log_writer.writerow(row)
+            except Exception as e:
+                rospy.logwarn_throttle(
+                    5.0,
+                    f"[{rospy.get_name()}] Failed to write runtime log row: {e}",
+                )
+
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         self.fx = msg.K[0]
         self.fy = msg.K[4]
@@ -356,9 +453,16 @@ class SemanticMapNode:
         bboxes: List[BoundingBox] = self.vlm_model.detect(
             image, self.prompt, confidence_threshold=self.confidence_threshold
         )
+        detection_ms = (time.time() - start_time) * 1000.0
+        self._log_runtime(
+            "vlm_2d_object_detection",
+            detection_ms,
+            header,
+            detections=len(bboxes),
+        )
         if self.config.verbose:
             rospy.loginfo(
-                f"[{rospy.get_name()}] Detected {len(bboxes)} objects in {time.time() - start_time:.2f} seconds."
+                f"[{rospy.get_name()}] Detected {len(bboxes)} objects in {detection_ms:.2f} ms."
             )
 
         detection_image = image.copy()
@@ -407,7 +511,19 @@ class SemanticMapNode:
         cloud_snapshot.points = o3d.utility.Vector3dVector(active_points)
 
         if len(bboxes) > 0 and self.fx is not None:
-            self._update_semantic_map(header, bboxes, cloud_snapshot, image.shape[:2])
+            semantic_update_start = time.time()
+            updated = self._update_semantic_map(
+                header, bboxes, cloud_snapshot, image.shape[:2]
+            )
+            semantic_update_ms = (time.time() - semantic_update_start) * 1000.0
+            self._log_runtime(
+                "semantic_map_update",
+                semantic_update_ms,
+                header,
+                detections=len(bboxes),
+                active_points=len(active_points),
+                updated=updated,
+            )
 
     @staticmethod
     def get_points_and_uv_in_mask(
@@ -1111,6 +1227,7 @@ class SemanticMapNode:
         self.semantic_map_pub.publish(cloud_msg)
 
     def _publish_semantic_objects(self, header: Header) -> None:
+        object_detection_start = time.time()
         self._rebuild_dirty_object_clusters()
         with self.map_lock:
             object_cluster_cache = {
@@ -1141,6 +1258,18 @@ class SemanticMapNode:
                 )
 
         self.semantic_objects_pub.publish(markers)
+        object_count = sum(
+            len(clusters)
+            for label_idx, clusters in object_cluster_cache.items()
+            if label_idx != self.no_semantics_idx
+        )
+        self._log_runtime(
+            "object_detection_3d",
+            (time.time() - object_detection_start) * 1000.0,
+            header,
+            semantic_objects=object_count,
+            markers=len(markers.markers),
+        )
 
     def _append_bbox_markers(
         self,
@@ -1199,7 +1328,7 @@ class SemanticMapNode:
         for start_idx, end_idx in edges:
             box_marker.points.append(Point(*corners_world[start_idx]))
             box_marker.points.append(Point(*corners_world[end_idx]))
-        box_marker.scale.x = 0.2
+        box_marker.scale.x = 0.5
         box_marker.color.r = color_rgb[0] / 255.0
         box_marker.color.g = color_rgb[1] / 255.0
         box_marker.color.b = color_rgb[2] / 255.0
@@ -1219,7 +1348,7 @@ class SemanticMapNode:
         for corner_idx in (4, 5, 6, 7):
             connector.points.append(Point(*corners_world[corner_idx]))
             connector.points.append(Point(*node_center))
-        connector.scale.x = 0.2
+        connector.scale.x = 0.5
         connector.color.r = color_rgb[0] / 255.0
         connector.color.g = color_rgb[1] / 255.0
         connector.color.b = color_rgb[2] / 255.0
@@ -1263,7 +1392,7 @@ class SemanticMapNode:
             + self.config.semantic_object_text_offset
         )
         text.pose.orientation.w = 1.0
-        text.scale.z = 1.5
+        text.scale.z = 2.5
         text.color.r = 1.0
         text.color.g = 1.0
         text.color.b = 1.0

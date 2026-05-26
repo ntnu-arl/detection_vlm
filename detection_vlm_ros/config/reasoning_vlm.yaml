@@ -2,13 +2,13 @@
 vlm:
   type: openai
   client_config:
-    model: gpt-5 
+    model: gpt-5.5 
 
 # Q&A prompt
-prompt: "Are the exits of this environment obstructed?" 
+prompt: "Is this place safe?" 
 # Image subscription parameters
 worker:
-  min_separation_s: 40.0
+  min_separation_s: 50.0
 compressed_image: True
 
 # Visualization parameters
@@ -17,3 +17,4 @@ footer_height: 80
 
 # Others
 verbose: False
+overlay: True

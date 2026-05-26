@@ -309,28 +309,6 @@ Useful config options:
 - `footer_height`: text footer height.
 - `runtime_logging_enabled`: write per-query runtime rows to CSV.
 
-### Runtime Logging
-
-The reasoning and semantic map nodes can write runtime CSV logs:
-
-- Reasoning default path: `/tmp/reasoning_vlm_runtimes.csv`
-- Semantic map default path: `/tmp/semantic_map_runtimes.csv`
-
-Enable logging in the YAML config:
-
-```yaml
-runtime_logging_enabled: True
-runtime_log_file: /tmp/semantic_map_runtimes.csv
-```
-
-The helper script summarizes runtime CSVs by module:
-
-```bash
-rosrun detection_vlm_ros compute_runtime_stats.py /tmp/semantic_map_runtimes.csv
-```
-
----
-
 ## License
 
 Released under **BSD-3-Clause**.
